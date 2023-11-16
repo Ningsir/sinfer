@@ -10,12 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.append(parent_dir)
 from sinfer.dataloader import DataLoader
 from sinfer.data import SinferDataset
+from sinfer.cpp_core import tensor_free
 
 from sage import SAGE
+
 
 def compute_acc(pred, labels):
     """
@@ -24,7 +26,9 @@ def compute_acc(pred, labels):
     return (th.argmax(pred, dim=1) == labels).float().sum() / len(pred)
 
 
-def evaluate(model, g, nfeat, labels, val_nid, test_nid, device, batch_size, num_workers=0):
+def evaluate(
+    model, g, nfeat, labels, val_nid, test_nid, device, batch_size, num_workers=0
+):
     """
     Evaluate the model on the validation set specified by ``val_mask``.
     g : The entire graph.
@@ -52,16 +56,21 @@ def load_subtensor(nfeat, labels, seeds, input_nodes):
     batch_labels = labels[seeds]
     return batch_inputs, batch_labels
 
-    
+
 #### Entry point
 def run(args, data):
     coo_row, coo_col = data.coo()
     graph = dgl.graph((coo_row, coo_col))
     print(graph)
-    kwargs = {'batch_size': args.batch_size,
-        'drop_last': False,
-        }
-    infer_dataloader = DataLoader(graph, data.feat_path, data.feat_dim, data.offsets, prefetch=True, **kwargs)
+    kwargs = {
+        "batch_size": args.batch_size,
+        "drop_last": False,
+        # 'use_uva': True,
+        "num_workers": 0,
+    }
+    infer_dataloader = DataLoader(
+        graph, data.feat_path, data.feat_dim, data.offsets, prefetch=True, **kwargs
+    )
     # Define model and optimizer
     model = SAGE(
         data.feat_dim,
@@ -70,8 +79,7 @@ def run(args, data):
         args.num_layers,
         F.relu,
         args.dropout,
-    )
-    model = model
+    ).to(device)
     loss_fcn = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
     data_time = 0
@@ -80,19 +88,30 @@ def run(args, data):
     start = time.time()
     with th.no_grad():
         t1 = time.time()
-        #TODO: 从磁盘中获取特征太慢
         for step, (input_nodes, seeds, blocks) in enumerate(infer_dataloader):
             data_time += time.time() - t1
             t2 = time.time()
-            batch_inputs = blocks[0].srcdata['feat']
-            batch_pred = model(blocks, batch_inputs)
+            batch_inputs = blocks[0].srcdata["feat"]
+            blocks = [block.int().to(device) for block in blocks]
+            batch_inputs_cuda = batch_inputs.to(device)
+            batch_pred = model(blocks, batch_inputs_cuda)
+            # tensor_free(batch_inputs)
             infer_time += time.time() - t2
             if step % 100 == 0:
-                print("Infer step: {}, data time: {}, infer time: {}".format(step, data_time, infer_time))
+                print(blocks)
+                print(
+                    "Infer step: {}, data time: {}, infer time: {}".format(
+                        step, data_time, infer_time
+                    )
+                )
             t1 = time.time()
 
     infer_dataloader.shutdown()
-    print("Infer time: {}, data time: {}, infer time: {}".format(time.time() - start, data_time, infer_time))
+    print(
+        "Infer time: {}, data time: {}, infer time: {}".format(
+            time.time() - start, data_time, infer_time
+        )
+    )
 
 
 if __name__ == "__main__":
@@ -131,7 +150,9 @@ if __name__ == "__main__":
     #     device = th.device("cuda:%d" % args.gpu)
     # else:
     #     device = th.device("cpu")
-    
+    device = th.device("cuda:%d" % args.gpu)
+    # device = th.device("cpu")
+    os.environ["SINFER_NUM_THREADS"] = "16"
     data = SinferDataset("/home/data/ogbn-products-ssd-infer")
     print(data)
     run(args, data)

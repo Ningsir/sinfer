@@ -1,25 +1,12 @@
-import argparse
-import time
-import struct
-import pandas as pd
-
 import dgl
 import dgl.nn.pytorch as dglnn
-
-import numpy as np
 import torch as th
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import tqdm
-from ogb.nodeproppred import DglNodePropPredDataset
-from collections import Counter
 
 
 class SAGE(nn.Module):
-    def __init__(
-        self, in_feats, n_hidden, n_classes, n_layers, activation, dropout
-    ):
+    def __init__(self, in_feats, n_hidden, n_classes, n_layers, activation, dropout):
         super().__init__()
         self.n_layers = n_layers
         self.n_hidden = n_hidden
