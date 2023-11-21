@@ -4,77 +4,46 @@ import os
 import sys
 
 import torch as th
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch_sparse import SparseTensor
 
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.append(parent_dir)
-from sinfer.dataloader import PygDataLoader
+from sinfer.dataloader import SinferPygDataloader
 from sinfer.data import SinferDataset
-from sinfer.cpp_core import tensor_free
+from sinfer.store import FeatureStore
 
 from sage import SAGE
 
 
-#### Entry point
-def run(args, data):
-    indptr, indices = data.indptr, data.indices
-    kwargs = {"batch_size": args.batch_size, "num_workers": args.num_workers}
-    # offsets = [0, data.num_nodes]
-    infer_dataloader = PygDataLoader(
-        indptr,
-        indices,
-        data.feat_path,
-        data.feat_dim,
-        data.offsets,
-        prefetch=True,
-        **kwargs
-    )
-    # Define model and optimizer
-    model = SAGE(data.feat_dim, args.num_hidden, data.num_classes, args.num_layers).to(
-        device
-    )
-    # loss_fcn = nn.CrossEntropyLoss()
-    # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    data_time = 0
-    copy_time = 0
-    infer_time = 0
-    model.eval()
-    start = time.time()
-    with th.no_grad():
-        t1 = time.time()
-        for step, (batch_size, seeds, adjs, feat) in enumerate(infer_dataloader):
-            data_time += time.time() - t1
-            t2 = time.time()
-            feat = feat.to(device)
-            adjs = [adj.to(device) for adj in adjs]
-            th.cuda.synchronize()
-            copy_time += time.time() - t2
-            t3 = time.time()
-            batch_pred = model(feat, adjs)
-            # tensor_free(batch_inputs)
-            th.cuda.synchronize()
-            infer_time += time.time() - t3
-            if step % 100 == 0:
-                print(
-                    "Infer step: {}, adj size: {}, data time: {}, copy time: {}, infer time: {}".format(
-                        step, adjs[0].size, data_time, copy_time, infer_time
-                    )
-                )
-            t1 = time.time()
+def acc(out, labels, train_idx, val_idx, test_idx):
+    from ogb.nodeproppred import Evaluator
 
-    infer_dataloader.shutdown()
-    print(
-        "Infer time: {}, data time: {}, copy time: {},  infer time: {}".format(
-            time.time() - start, data_time, copy_time, infer_time
-        )
-    )
+    evaluator = Evaluator(name="ogbn-products")
+    y_true = labels.reshape(-1, 1)
+    y_pred = out.argmax(dim=-1, keepdim=True)
+    train_acc = evaluator.eval(
+        {
+            "y_true": y_true[train_idx],
+            "y_pred": y_pred[train_idx],
+        }
+    )["acc"]
+    val_acc = evaluator.eval(
+        {
+            "y_true": y_true[val_idx],
+            "y_pred": y_pred[val_idx],
+        }
+    )["acc"]
+    test_acc = evaluator.eval(
+        {
+            "y_true": y_true[test_idx],
+            "y_pred": y_pred[test_idx],
+        }
+    )["acc"]
+    return train_acc, val_acc, test_acc
 
 
 if __name__ == "__main__":
+    default_model_path = os.path.join(os.path.dirname(__file__), "sage.pt")
     argparser = argparse.ArgumentParser("layer based inference")
     argparser.add_argument(
         "--gpu",
@@ -82,37 +51,52 @@ if __name__ == "__main__":
         default=0,
         help="GPU device ID. Use -1 for CPU training",
     )
-    argparser.add_argument("--num-epochs", type=int, default=20)
-    argparser.add_argument("--num-parts", type=int, default=8)
-    argparser.add_argument("--num-buffers", type=int, default=4)
-    argparser.add_argument("--prefetch", type=bool, default=True)
     argparser.add_argument("--n-classes", type=int, default=47)
     argparser.add_argument("--num-hidden", type=int, default=256)
-    argparser.add_argument("--num-layers", type=int, default=1)
-    # 5, 10, 15
-    argparser.add_argument("--fan-out", type=str, default="25,10")
+    argparser.add_argument("--num-layers", type=int, default=2)
     argparser.add_argument("--batch-size", type=int, default=1000)
-    argparser.add_argument("--val-batch-size", type=int, default=10000)
-    argparser.add_argument("--log-every", type=int, default=20)
-    argparser.add_argument("--eval-every", type=int, default=1)
-    argparser.add_argument("--lr", type=float, default=0.003)
-    argparser.add_argument("--dropout", type=float, default=0.5)
+    argparser.add_argument("--model-path", type=str, default=default_model_path)
     argparser.add_argument(
         "--num-workers",
         type=int,
-        default=0,
+        default=8,
         help="Number of sampling processes. Use 0 for no extra process.",
     )
     argparser.add_argument("--save-pred", type=str, default="")
     argparser.add_argument("--wd", type=float, default=0)
     args = argparser.parse_args()
-    # if args.gpu >= 0:
-    #     device = th.device("cuda:%d" % args.gpu)
-    # else:
-    #     device = th.device("cpu")
-    device = th.device("cuda:%d" % args.gpu)
-    # device = th.device("cpu")
+    if args.gpu >= 0:
+        device = th.device("cuda:%d" % args.gpu)
+    else:
+        device = th.device("cpu")
     os.environ["SINFER_NUM_THREADS"] = "16"
-    data = SinferDataset("/home/data/ogbn-products-ssd-infer")
+    data = SinferDataset("/home/ningxin/data/ogbn-products-ssd-infer-part16")
     print(data)
-    run(args, data)
+    # run(args, data)
+    nodes = th.arange(0, data.num_nodes, dtype=th.int64)
+    kwargs = {"batch_size": args.batch_size, "num_workers": args.num_workers}
+    dataloader = SinferPygDataloader(data.indptr, data.indices, [-1], nodes, **kwargs)
+
+    model = SAGE(data.feat_dim, args.num_hidden, data.num_classes, args.num_layers).to(
+        device
+    )
+    model.load_state_dict(th.load(args.model_path))
+    for i in range(10):
+        # TODO: bugfix: 一个FeatureStore被重复使用会导致系统死锁
+        feat_store = FeatureStore(
+            data.feat_path, data.offsets, data.num_nodes, data.feat_dim
+        )
+        model.eval()
+        start = time.time()
+        with th.no_grad():
+            out = model.inference(feat_store, dataloader, device)
+        print("infer time: {} s".format(time.time() - start))
+        out = out.gather_all()
+        labels = data.lables
+        train_idx, val_idx, test_idx = data.train_idx, data.val_idx, data.test_idx
+        train_acc, val_acc, test_acc = acc(out, labels, train_idx, val_idx, test_idx)
+        print(
+            "train acc: {}, val acc: {}, test acc: {}".format(
+                train_acc, val_acc, test_acc
+            )
+        )

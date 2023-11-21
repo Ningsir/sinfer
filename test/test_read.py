@@ -8,7 +8,12 @@ import time
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from sinfer.cpp_core import gather_mem, gather_sinfer, gather_ssd, gather_sinfer1
+from sinfer.cpp_core import (
+    gather_range,
+    gather_cache_ssd_dma,
+    gather_ssd,
+    gather_cache_ssd,
+)
 from sinfer.data import SinferDataset
 
 
@@ -29,7 +34,7 @@ def test_gather_mem_base(data_path, start, end, feat_dim):
     nodes = np.arange(start, end, dtype=np.int64)
     feat1 = raw_data[nodes]
 
-    feat2 = gather_mem(data_path, start, end, feat_dim)
+    feat2 = gather_range(data_path, start, end, feat_dim)
 
     np.testing.assert_allclose(feat1, feat2.numpy())
 
@@ -49,13 +54,15 @@ def test_gather_mem_products():
 def test_gather_sinfer_base(data_path, cache_start, cache_end, feat_dim, num_nodes):
     raw_data = np.fromfile(data_path, dtype=np.float32)
     raw_data = raw_data.reshape(-1, feat_dim)
-    cache = gather_mem(data_path, cache_start, cache_end, feat_dim)
+    cache = gather_range(data_path, cache_start, cache_end, feat_dim)
 
     nodes = th.randint(0, num_nodes, (num_nodes // 10,), dtype=th.int64)
 
     feat1 = raw_data[nodes.numpy()]
     # print(feat1)
-    feat = gather_sinfer(data_path, nodes, feat_dim, cache, cache_start, cache_end)
+    feat = gather_cache_ssd_dma(
+        data_path, nodes, feat_dim, cache, cache_start, cache_end
+    )
     # print(feat)
     np.testing.assert_allclose(feat1, feat.numpy())
 
@@ -80,7 +87,7 @@ def test_mem_gather_speed(data_path):
     feat_dim = data.feat_dim
     offsets = data.offsets
     start, end = int(offsets[2]), int(offsets[3])
-    cache = gather_mem(feat_path, start, end, feat_dim)
+    cache = gather_range(feat_path, start, end, feat_dim)
     raw_data = np.fromfile(feat_path, dtype=np.float32).reshape(-1, feat_dim)
 
     size = (end - start) * 1
@@ -91,7 +98,7 @@ def test_mem_gather_speed(data_path):
     mem_time = time.time() - t1
     speed1 = total / (mem_time * 1e9)
     t2 = time.time()
-    f2 = gather_sinfer(feat_path, nodes, feat_dim, cache, start, end)
+    f2 = gather_cache_ssd_dma(feat_path, nodes, feat_dim, cache, start, end)
     sinfer_mem_time = time.time() - t2
     speed2 = total / (sinfer_mem_time * 1e9)
     np.testing.assert_allclose(f1, f2.numpy())
@@ -108,7 +115,7 @@ def test_cache_gather_speed(data_path):
     feat_dim = data.feat_dim
     offsets = data.offsets
     start, end = int(offsets[2]), int(offsets[3])
-    cache = gather_mem(feat_path, start, end, feat_dim)
+    cache = gather_range(feat_path, start, end, feat_dim)
     raw_data = np.fromfile(feat_path, dtype=np.float32).reshape(-1, feat_dim)
 
     size1 = end - start
@@ -126,7 +133,7 @@ def test_cache_gather_speed(data_path):
     mem_time = time.time() - t1
     speed1 = total / (mem_time * 1e9)
     t2 = time.time()
-    f2 = gather_sinfer1(feat_path, nodes, feat_dim, cache, start, end)
+    f2 = gather_cache_ssd(feat_path, nodes, feat_dim, cache, start, end)
     sinfer_mem_time = time.time() - t2
     speed2 = total / (sinfer_mem_time * 1e9)
     np.testing.assert_allclose(f1, f2.numpy())
@@ -143,7 +150,7 @@ def test_ssd_direct_gather_speed(data_path):
     feat_dim = data.feat_dim
     offsets = data.offsets
     start, end = 0, 0
-    cache = gather_mem(feat_path, start, end, feat_dim)
+    cache = gather_range(feat_path, start, end, feat_dim)
     raw_data = np.fromfile(feat_path, dtype=np.float32).reshape(-1, feat_dim)
 
     size = 20000
@@ -155,7 +162,7 @@ def test_ssd_direct_gather_speed(data_path):
     mem_time = time.time() - t1
     speed1 = total / (mem_time * 1e9)
     t2 = time.time()
-    f2 = gather_sinfer(feat_path, nodes, feat_dim, cache, start, end)
+    f2 = gather_cache_ssd_dma(feat_path, nodes, feat_dim, cache, start, end)
     sinfer_mem_time = time.time() - t2
     speed2 = total / (sinfer_mem_time * 1e9)
     np.testing.assert_allclose(f1, f2.numpy())

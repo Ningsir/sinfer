@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch_sparse import SparseTensor
 
@@ -138,7 +139,16 @@ def get_data(path):
     train_idx = split_idx["train"]
     val_idx = split_idx["valid"]
     test_idx = split_idx["test"]
-    return indptr, indices, features, feat_dim, num_nodes, num_classes
+    return (
+        indptr,
+        indices,
+        features,
+        labels,
+        feat_dim,
+        num_nodes,
+        num_classes,
+        split_idx,
+    )
 
 
 @torch.no_grad()
@@ -182,6 +192,59 @@ def full_inference():
     print("Infer time: {}".format(time.time() - start))
 
 
+def train(epoch, train_loader):
+    model.reset_parameters()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+    model.train()
+    x_all = features
+    for i in range(epoch):
+        total_loss = total_correct = 0
+        for step, (batch_size, n_id, adjs, batch) in enumerate(train_loader):
+            x = x_all[n_id].to(device)
+            adjs = [adj.to(device) for adj in adjs]
+            optimizer.zero_grad()
+            out = model(x, adjs)[:batch_size]
+
+            y = labels[batch].squeeze().to(device)
+            loss = F.cross_entropy(out, y)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += float(loss)
+            total_correct += int(out.argmax(dim=-1).eq(y).sum())
+
+        loss = total_loss / len(train_loader)
+        approx_acc = total_correct / split_idx["train"].size(0)
+        print("Epoch: {}, loss: {}. train acc: {}".format(i, loss, approx_acc))
+
+
+def acc(out, labels, split_idx):
+    from ogb.nodeproppred import Evaluator
+
+    evaluator = Evaluator(name="ogbn-products")
+    y_true = labels.reshape(-1, 1)
+    y_pred = out.argmax(dim=-1, keepdim=True)
+    train_acc = evaluator.eval(
+        {
+            "y_true": y_true[split_idx["train"]],
+            "y_pred": y_pred[split_idx["train"]],
+        }
+    )["acc"]
+    val_acc = evaluator.eval(
+        {
+            "y_true": y_true[split_idx["valid"]],
+            "y_pred": y_pred[split_idx["valid"]],
+        }
+    )["acc"]
+    test_acc = evaluator.eval(
+        {
+            "y_true": y_true[split_idx["test"]],
+            "y_pred": y_pred[split_idx["test"]],
+        }
+    )["acc"]
+    return train_acc, val_acc, test_acc
+
+
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--gpu", type=int, default=0)
@@ -190,29 +253,61 @@ if __name__ == "__main__":
     argparser.add_argument("--num-hiddens", type=int, default=256)
     argparser.add_argument("--num-layers", type=int, default=2)
     argparser.add_argument(
-        "--data_path", type=str, default="/home/data/ogbn-products-mmap"
+        "--data_path", type=str, default="/home/ningxin/data/ogbn-products-mmap"
     )
+    # train arguments
+    argparser.add_argument("--train", action="store_true")
+    argparser.add_argument("--fan-outs", type=str, default="15, 10")
+    argparser.add_argument("--epoch", type=int, default=20)
     args = argparser.parse_args()
 
-    indptr, indices, features, feat_dim, num_nodes, num_classes = get_data(
-        args.data_path
-    )
+    (
+        indptr,
+        indices,
+        features,
+        labels,
+        feat_dim,
+        num_nodes,
+        num_classes,
+        split_idx,
+    ) = get_data(args.data_path)
+    labels = labels.long()
     device = torch.device("cuda:%d" % args.gpu)
     torch.cuda.set_device(device)
     model = SAGE(feat_dim, args.num_hiddens, num_classes, num_layers=args.num_layers)
     model = model.to(device)
-    all_nodes = torch.arange(0, num_nodes, dtype=torch.int64)
-    full_infer_loader = MMAPDataLoader(
-        indptr,
-        indices,
-        node_idx=all_nodes,
-        sizes=[-1],
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-    )
-    # full_inference()
-    model.eval()
-    start = time.time()
-    model.inference(features, full_infer_loader, device)
-    print("infer time: {}".format(time.time() - start))
+    model_path = os.path.join(os.path.dirname(__file__), "sage.pt")
+    if not args.train:
+        model.load_state_dict(torch.load(model_path))
+        all_nodes = torch.arange(0, num_nodes, dtype=torch.int64)
+        full_infer_loader = MMAPDataLoader(
+            indptr,
+            indices,
+            node_idx=all_nodes,
+            sizes=[-1],
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
+        # full_inference()
+        model.eval()
+        start = time.time()
+        out = model.inference(features, full_infer_loader, device)
+        train_acc, val_acc, test_acc = acc(out, labels, split_idx)
+        print(
+            "infer time: {}, train acc: {}, val acc: {}, test acc: {}".format(
+                time.time() - start, train_acc, val_acc, test_acc
+            )
+        )
+    else:
+        train_loader = MMAPDataLoader(
+            indptr,
+            indices,
+            node_idx=split_idx["train"],
+            sizes=[int(size) for size in args.fan_outs.split(",")],
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+        )
+        train(args.epoch, train_loader)
+        torch.save(model.state_dict(), model_path)

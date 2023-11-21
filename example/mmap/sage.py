@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 from torch_geometric.nn import SAGEConv
+import time
 
 
 class MapTensor:
@@ -64,9 +65,8 @@ class SAGE(torch.nn.Module):
 
     @torch.no_grad()
     def inference(self, x_all, subgraph_loader, device):
-        pbar = tqdm(total=x_all.size(0) * self.num_layers)
-        pbar.set_description("Evaluating")
-
+        # pbar = tqdm(total=x_all.size(0) * self.num_layers)
+        # pbar.set_description("Evaluating")
         num_nodes = x_all.shape[0]
         # Compute representations of nodes layer by layer, using *all*
         # available edges. This leads to faster computation in contrast to
@@ -76,20 +76,50 @@ class SAGE(torch.nn.Module):
             # create a mmap tensor
             filename = "./embedding-{}.bin".format(i)
             emb_mmap = MapTensor(filename, (num_nodes, self.out_shape[i]))
-            for batch_size, n_id, adj, batch in subgraph_loader:
+            sample_time, gather_time, transfer_time, infer_time = 0, 0, 0, 0
+            t1 = time.time()
+            for step, (batch_size, n_id, adj, batch) in enumerate(subgraph_loader):
+                sample_time += time.time() - t1
+                t2 = time.time()
+
+                # gather
+                x = x_all[n_id]
+                gather_time += time.time() - t2
+                t3 = time.time()
+
+                # transfer
+                x = x.to(device)
                 edge_index, _, size = adj[0].to(device)
-                total_edges += edge_index.size(1)
-                x = x_all[n_id].to(device)
                 x_target = x[: size[1]]
+                total_edges += edge_index.size(1)
+                torch.cuda.synchronize()
+                transfer_time += time.time() - t3
+                t4 = time.time()
+
+                # infer
                 x = self.convs[i]((x, x_target), edge_index)
                 if i != self.num_layers - 1:
                     x = F.relu(x)
+                torch.cuda.synchronize()
+                infer_time += time.time() - t4
+
                 x_cpu = x.to(torch.device("cpu"))
                 emb_mmap.write_data(batch, x_cpu)
-                pbar.update(batch_size)
-
+                # pbar.update(batch_size)
+                t1 = time.time()
+                if step % 100 == 0:
+                    print(
+                        "step: {}, sample time: {}, gather time: {}, transfer time: {}, infer time: {}".format(
+                            step, sample_time, gather_time, transfer_time, infer_time
+                        )
+                    )
+            print(
+                "layer: {}, sample time: {}, gather time: {}, transfer time: {}, infer time: {}".format(
+                    i, sample_time, gather_time, transfer_time, infer_time
+                )
+            )
             x_all = emb_mmap.tensor()
 
-        pbar.close()
+        # pbar.close()
 
         return x_all
