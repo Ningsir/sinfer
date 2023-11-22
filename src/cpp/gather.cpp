@@ -1,6 +1,6 @@
 #include "gather.h"
 
-#include "spdlog/spdlog.h"
+#include "logger.h"
 
 #define ALIGNMENT 4096
 

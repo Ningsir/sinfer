@@ -1,5 +1,4 @@
 #pragma once
-// #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
 
 #include <ATen/ATen.h>
 #include <Python.h>
@@ -22,7 +21,7 @@
 #include <vector>
 
 #include "gather.h"
-#include "spdlog/spdlog.h"
+#include "logger.h"
 
 const int64_t INVALID_PART_ID = -1;
 bool fileExists(const std::string &filePath) {
@@ -45,6 +44,7 @@ class ReadNextPartition {
   ReadNextPartition(int fd, std::vector<int64_t> offsets_in_bytes)
       : fd_(fd), offsets_in_bytes_(offsets_in_bytes) {
     thread_ = nullptr;
+    mem_ = nullptr;
     lock_ = new std::mutex;
     prepared_ = true;
     done_ = false;
@@ -119,6 +119,7 @@ class ReadNextPartition {
  private:
   // 从0到n顺序加载分区数据到缓存中
   void run() {
+    SPDLOG_INFO("start read run loop");
     while (!done_) {
       // 阻塞直到数据被使用
       std::unique_lock<std::mutex> lock(*lock_);
@@ -144,6 +145,7 @@ class ReadNextPartition {
       lock.unlock();
       cv_.notify_all();
     }
+    SPDLOG_INFO("stop read run loop");
   }
   std::thread *thread_;
   // 存储预取的数据
@@ -174,6 +176,7 @@ class WritePartition {
         num_workers_(num_workers),
         sequential_(sequential) {
     queue_lock_ = new std::mutex;
+    done_ = false;
   }
 
   ~WritePartition() {
@@ -276,6 +279,7 @@ class WritePartition {
                  data.sizes()[1]);
   }
   void run() {
+    SPDLOG_INFO("start write run loop");
     while (!done_) {
       // 阻塞直到队列中有数据或者线程结束
       std::unique_lock<std::mutex> lock(*queue_lock_);
@@ -293,6 +297,7 @@ class WritePartition {
 
       write_data_to_ssd(feat, batch);
     }
+    SPDLOG_INFO("stop write run loop");
   }
   std::vector<std::thread *> threads_;
   int fd_;

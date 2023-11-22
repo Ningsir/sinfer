@@ -2,7 +2,7 @@
 
 #include "free.h"
 #include "gather.h"
-#include "spdlog/cfg/env.h"
+#include "logger.h"
 #include "store.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
