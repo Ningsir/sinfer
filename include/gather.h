@@ -21,6 +21,27 @@
 #define ALIGNMENT 4096
 
 /**
+ * 利用多线程在缓存和ssd(利用DMA)中读取数据
+ * @param cache 顶点ID在[cache_start, cache_end)范围内的特征缓存在cache中
+ * */
+torch::Tensor gather_dma_with_fd(int fd,
+                                 const torch::Tensor& idx,
+                                 int64_t feature_dim,
+                                 const torch::Tensor& cache,
+                                 int64_t cache_start,
+                                 int64_t cache_end);
+/**
+ * 在缓存和ssd(利用DMA)中读取数据
+ * @param cache 顶点ID在[cache_start, cache_end)范围内的特征缓存在cache中
+ * */
+torch::Tensor gather_cache_ssd_dma_with_fd(int feature_fd,
+                                           const torch::Tensor& idx,
+                                           int64_t feature_dim,
+                                           const torch::Tensor& cache,
+                                           int64_t cache_start,
+                                           int64_t cache_end);
+
+/**
  * 在缓存和ssd(利用DMA)中读取数据
  * @param cache 顶点ID在[cache_start, cache_end)范围内的特征缓存在cache中
  * */

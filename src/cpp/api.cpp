@@ -35,7 +35,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                          bool prefetch,
                          py::object dtype,
                          int num_writer_workers,
-                         bool writer_seq) {
+                         bool writer_seq,
+                         bool dma) {
              return std::make_shared<FeatureStore>(
                  file_path,
                  offsets,
@@ -44,7 +45,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                  prefetch,
                  torch::python::detail::py_object_to_dtype(dtype),
                  num_writer_workers,
-                 writer_seq);
+                 writer_seq,
+                 dma);
            }),
            py::arg("file_path"),
            py::arg("offsets"),
@@ -53,14 +55,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
            py::arg("prefetch") = true,
            py::arg("dtype") = torch::kFloat32,
            py::arg("num_writer_workers") = 2,
-           py::arg("writer_seq") = true)
+           py::arg("writer_seq") = true,
+           py::arg("dma") = false)
       .def("update_cache",
            &FeatureStore::update_cache,
            py::call_guard<py::gil_scoped_release>())
+      .def("clear_cache", &FeatureStore::clear_cache)
       .def("gather",
            &FeatureStore::gather,
            py::call_guard<py::gil_scoped_release>())
-       .def("gather_all",
+      .def("gather_all",
            &FeatureStore::gather_all,
            py::call_guard<py::gil_scoped_release>())
       .def("write_data",

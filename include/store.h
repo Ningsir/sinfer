@@ -23,6 +23,8 @@
 #include "gather.h"
 #include "logger.h"
 
+#define ALIGNMENT 4096
+
 const int64_t INVALID_PART_ID = -1;
 bool fileExists(const std::string &filePath) {
   std::ifstream file(filePath);
@@ -59,6 +61,7 @@ class ReadNextPartition {
   ~ReadNextPartition() {
     if (mem_ != nullptr) {
       free(mem_);
+      mem_ = nullptr;
     }
     stop();
     delete lock_;
@@ -107,13 +110,20 @@ class ReadNextPartition {
     prepared_ = false;
     part_id_ = 0;
     // 分配预取空间
-    if (posix_memalign(&mem_, 4096, max_size_)) {
+    if (posix_memalign(&mem_, ALIGNMENT, max_size_)) {
       SPDLOG_ERROR(
           "Unable to allocate memory: {} bytes\nError: {}", max_size_, errno);
       throw std::runtime_error("Unable to allocate memory");
     }
     lock.unlock();
     cv_.notify_all();
+  }
+
+  void clear_mem() {
+    if (mem_ != nullptr) {
+      free(mem_);
+      mem_ = nullptr;
+    }
   }
 
  private:
@@ -226,6 +236,10 @@ class WritePartition {
     // 注意：只是等到队列为空，不能保证所有数据都写入到磁盘中
     std::unique_lock<std::mutex> lock(*queue_lock_);
     cv_.wait(lock, [this] { return queue_.empty() == true; });
+    if (fsync(fd_) == -1) {
+      SPDLOG_ERROR("fsync ERROR: {}", strerror(errno));
+      throw std::runtime_error("fsync ERROR");
+    }
     SPDLOG_INFO("flush all data to disk done");
   }
 
@@ -320,19 +334,28 @@ class FeatureStore {
                bool prefetch = true,
                torch::Dtype dtype = torch::kFloat32,
                int writer_workers = 2,
-               bool writer_seq = true)
+               bool writer_seq = true,
+               bool dma = true)
       : file_path_(file_path),
         offsets_(offsets),
         num_(num),
         dim_(dim),
         prefetch_(prefetch),
-        dtype_(dtype) {
+        dtype_(dtype),
+        dma_(dma) {
     createFileIfNotExists(file_path_);
     int flags = O_RDWR;
     fd_ = open(file_path_.c_str(), flags);
     if (fd_ == -1) {
       SPDLOG_ERROR("Unable to open {}\nError: {}", file_path_, errno);
       throw std::runtime_error("Unable to open file " + file_path_);
+    }
+    if (dma_) {
+      dma_fd_ = open(file_path_.c_str(), O_RDONLY | O_DIRECT);
+      if (dma_fd_ == -1) {
+        SPDLOG_ERROR("Unable to open {}\nError: {}", file_path_, errno);
+        throw std::runtime_error("Unable to open file " + file_path_);
+      }
     }
     if (dtype_ == torch::kFloat64) {
       dtype_size_ = 8;
@@ -367,9 +390,27 @@ class FeatureStore {
   ~FeatureStore() {
     if (cache_ptr_ != nullptr) {
       free(cache_ptr_);
+      cache_ptr_ = nullptr;
     }
     close(fd_);
+    if (dma_) {
+      close(dma_fd_);
+    }
   }
+
+  /**
+   * 清除缓存
+   */
+  void clear_cache() {
+    SPDLOG_INFO("clear cache");
+    cache_part_id_ = INVALID_PART_ID;
+    reader_->clear_mem();
+    if (cache_ptr_ != nullptr) {
+      free(cache_ptr_);
+      cache_ptr_ = nullptr;
+    }
+  }
+
   /*将part_id对应的分区特征加载到内存中*/
   void update_cache(int64_t part_id) {
     if (part_id != cache_part_id_) {
@@ -378,7 +419,7 @@ class FeatureStore {
           offsets_in_bytes_[part_id + 1] - offsets_in_bytes_[part_id];
       if (cache_part_id_ == INVALID_PART_ID) {
         // 分配缓存空间
-        if (posix_memalign(&cache_ptr_, 4096, max_size_in_bytes_)) {
+        if (posix_memalign(&cache_ptr_, ALIGNMENT, max_size_in_bytes_)) {
           SPDLOG_ERROR("Unable to allocate memory: {} bytes\nError: {}",
                        max_size_in_bytes_,
                        errno);
@@ -408,15 +449,25 @@ class FeatureStore {
 
   /*从磁盘和缓存中读取对应id的特征数据*/
   torch::Tensor gather(const torch::Tensor &ids) {
-    if (cache_part_id_ != INVALID_PART_ID) {
-      return gather_cache_ssd_with_fd(fd_,
-                                      ids,
-                                      dim_,
-                                      cache_,
-                                      offsets_[cache_part_id_],
-                                      offsets_[cache_part_id_ + 1]);
+    // TODO: 支持dma读取数据，避免使用缓冲区，减少内存的使用
+    if (!dma_) {
+      if (cache_part_id_ != INVALID_PART_ID) {
+        return gather_cache_ssd_with_fd(fd_,
+                                        ids,
+                                        dim_,
+                                        cache_,
+                                        offsets_[cache_part_id_],
+                                        offsets_[cache_part_id_ + 1]);
+      } else {
+        return gather_ssd_with_fd(fd_, ids, dim_);
+      }
     } else {
-      return gather_ssd_with_fd(fd_, ids, dim_);
+      return gather_dma_with_fd(dma_fd_,
+                                ids,
+                                dim_,
+                                cache_,
+                                offsets_[cache_part_id_],
+                                offsets_[cache_part_id_ + 1]);
     }
   }
 
@@ -436,6 +487,7 @@ class FeatureStore {
  private:
   std::string file_path_;
   int fd_;
+  int dma_fd_;
   std::vector<int64_t> offsets_;
   std::vector<int64_t> offsets_in_bytes_;
   int64_t max_size_in_bytes_;
@@ -450,6 +502,7 @@ class FeatureStore {
   void *cache_ptr_;
   // 当前缓存的分区ID
   int64_t cache_part_id_;
+  bool dma_;
   std::unique_ptr<ReadNextPartition> reader_;
   std::unique_ptr<WritePartition> writer_;
 };
