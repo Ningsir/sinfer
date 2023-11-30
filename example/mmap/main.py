@@ -50,7 +50,7 @@ class MMAPDataLoader(torch.utils.data.DataLoader):
         node_idx: Tensor,
         num_nodes: Optional[int] = None,
         transform: Callable = None,
-        **kwargs
+        **kwargs,
     ):
         if "collate_fn" in kwargs:
             del kwargs["collate_fn"]
@@ -157,7 +157,7 @@ def full_inference():
 
     process = psutil.Process()
     mem = process.memory_info().rss / (1024 * 1024 * 1024)
-    print("before infer mem: {} GB".format(mem))
+    print("before infer mem: {:.4f} GB".format(mem))
     model.eval()
     sample_time, gather_time, copy_time, infer_time = 0, 0, 0, 0
     start = time.time()
@@ -182,14 +182,14 @@ def full_inference():
         infer_time += time.time() - t4
         if step % 100 == 0:
             mem = process.memory_info().rss / (1024 * 1024 * 1024)
-            print("infer mem: {} GB".format(mem))
+            print("infer mem: {:.4f} GB".format(mem))
             print(
-                "Infer step: {}, adj size: {}, sample_time: {}, gather time: {}, infer time: {}".format(
+                "Infer step: {}, adj size: {}, sample_time: {:.4f}, gather time: {:.4f}, infer time: {:.4f}".format(
                     step, adjs[0].size, sample_time, gather_time, infer_time
                 )
             )
         t1 = time.time()
-    print("Infer time: {}".format(time.time() - start))
+    print("Infer time: {:.4f}".format(time.time() - start))
 
 
 def train(epoch, train_loader):
@@ -215,7 +215,7 @@ def train(epoch, train_loader):
 
         loss = total_loss / len(train_loader)
         approx_acc = total_correct / split_idx["train"].size(0)
-        print("Epoch: {}, loss: {}. train acc: {}".format(i, loss, approx_acc))
+        print("Epoch: {}, loss: {:.4f}. train acc: {:.4f}".format(i, loss, approx_acc))
 
 
 def acc(out, labels, split_idx):
@@ -253,7 +253,7 @@ if __name__ == "__main__":
     argparser.add_argument("--num-hiddens", type=int, default=256)
     argparser.add_argument("--num-layers", type=int, default=2)
     argparser.add_argument(
-        "--data_path", type=str, default="/home/ningxin/data/ogbn-products-mmap"
+        "--data-path", type=str, default="/home/data/ogbn-products-mmap"
     )
     # train arguments
     argparser.add_argument("--train", action="store_true")
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     torch.cuda.set_device(device)
     model = SAGE(feat_dim, args.num_hiddens, num_classes, num_layers=args.num_layers)
     model = model.to(device)
-    model_path = os.path.join(os.path.dirname(__file__), "sage.pt")
+    model_path = os.path.join(os.path.dirname(__file__), f"sage{args.num_layers}.pt")
     if not args.train:
         model.load_state_dict(torch.load(model_path))
         all_nodes = torch.arange(0, num_nodes, dtype=torch.int64)
@@ -286,7 +286,7 @@ if __name__ == "__main__":
             node_idx=all_nodes,
             sizes=[-1],
             batch_size=args.batch_size,
-            shuffle=False,
+            shuffle=True,
             num_workers=args.num_workers,
         )
         # full_inference()
@@ -295,7 +295,7 @@ if __name__ == "__main__":
         out = model.inference(features, full_infer_loader, device)
         train_acc, val_acc, test_acc = acc(out, labels, split_idx)
         print(
-            "infer time: {}, train acc: {}, val acc: {}, test acc: {}".format(
+            "infer time: {:.4f}, train acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}".format(
                 time.time() - start, train_acc, val_acc, test_acc
             )
         )

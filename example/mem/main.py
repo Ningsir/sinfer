@@ -2,6 +2,7 @@
 
 import os
 import argparse
+import time
 
 import torch
 import torch.nn.functional as F
@@ -25,11 +26,13 @@ argparser.add_argument("--epoch", type=int, default=20)
 args = argparser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-root = args.data_path
-dataset = PygNodePropPredDataset("ogbn-products", root)
+dataset = PygNodePropPredDataset("ogbn-products", args.data_path)
 split_idx = dataset.get_idx_split()
 evaluator = Evaluator(name="ogbn-products")
 data = dataset[0].to(device, "x", "y")
+model_path = os.path.join(
+    os.path.dirname(__file__), "sage{}.pt".format(args.num_layers)
+)
 
 train_loader = NeighborLoader(
     data,
@@ -40,12 +43,11 @@ train_loader = NeighborLoader(
     num_workers=args.num_workers,
     persistent_workers=True,
 )
-
 subgraph_loader = NeighborLoader(
     data,
     input_nodes=None,
     num_neighbors=[-1],
-    batch_size=4096,
+    batch_size=args.batch_size,
     num_workers=args.num_workers,
     persistent_workers=True,
 )
@@ -76,29 +78,48 @@ class SAGE(torch.nn.Module):
         return x
 
     def inference(self, x_all):
-        pbar = tqdm(total=x_all.size(0) * self.num_layers)
-        pbar.set_description("Evaluating")
-
         # Compute representations of nodes layer by layer, using *all*
         # available edges. This leads to faster computation in contrast to
         # immediately computing the final representations of each batch.
         for i in range(self.num_layers):
             xs = []
-            for batch in subgraph_loader:
-                x = x_all[batch.n_id].to(device)
+            sample_time, gather_time, transfer_time, infer_time = 0, 0, 0, 0
+            t1 = time.time()
+            for step, batch in enumerate(subgraph_loader):
+                sample_time += time.time() - t1
+
+                t2 = time.time()
+                x = x_all[batch.n_id]
+                gather_time += time.time() - t2
+
+                t3 = time.time()
+                x = x.to(device)
                 edge_index = batch.edge_index.to(device)
+                torch.cuda.synchronize()
+                transfer_time += time.time() - t3
+
+                t4 = time.time()
                 x = self.convs[i](x, edge_index)
+                torch.cuda.synchronize()
+                infer_time += time.time() - t4
+
                 x = x[: batch.batch_size]
                 if i != self.num_layers - 1:
                     x = x.relu()
                 xs.append(x.cpu())
-
-                pbar.update(batch.batch_size)
-
+                t1 = time.time()
+                if step % 100 == 0:
+                    print(
+                        "step: {}, sample time: {}, gather time: {}, transfer time: {}, infer time: {}".format(
+                            step, sample_time, gather_time, transfer_time, infer_time
+                        )
+                    )
+            print(
+                "Layer: {}, sample time: {}, gather time: {}, transfer time: {}, infer time: {}".format(
+                    i, sample_time, gather_time, transfer_time, infer_time
+                )
+            )
             x_all = torch.cat(xs, dim=0)
-
-        pbar.close()
-
         return x_all
 
 
@@ -169,16 +190,20 @@ def test():
     return train_acc, val_acc, test_acc
 
 
-model.reset_parameters()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
-
-for epoch in range(1, args.epoch):
-    loss, acc = train(epoch)
-    print(f"Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}")
-
-model_path = os.path.join(
-    os.path.dirname(__file__), "sage{}.pt".format(args.num_layers)
-)
-torch.save(model.state_dict(), model_path)
-train_acc, val_acc, test_acc = test()
-print(f"Train: {train_acc:.4f}, Val: {val_acc:.4f}, " f"Test: {test_acc:.4f}")
+if args.train:
+    model.reset_parameters()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+    for epoch in range(1, 21):
+        loss, acc = train(epoch)
+        print(f"Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}")
+    train_acc, val_acc, test_acc = test()
+    print(f"Train: {train_acc:.4f}, Val: {val_acc:.4f}, " f"Test: {test_acc:.4f}")
+    torch.save(model.state_dict(), model_path)
+else:
+    model.load_state_dict(torch.load(model_path))
+    start = time.time()
+    train_acc, val_acc, test_acc = test()
+    print(
+        f"Infer time: {time.time() - start}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, "
+        f"Test: {test_acc:.4f}"
+    )

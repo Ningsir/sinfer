@@ -3,18 +3,17 @@ from setuptools import setup, Extension
 from torch.utils import cpp_extension
 import numpy as np
 import os
+import sysconfig
 
 current_dir = os.path.abspath(os.path.dirname(__file__))
 
+python_include = sysconfig.get_paths()["include"]
 # 指定spdlog库的路径
-spdlog_include_dir = "/home/ningxin/miniconda3/envs/ssd/include/"
-spdlog_lib_dir = "/home/ningxin/miniconda3/envs/ssd/lib"
+spdlog_include_dir = os.path.join(python_include, "../")
+spdlog_lib_dir = os.path.join(python_include, "../../lib")
 
-# spdlog_include_dir = '/root/miniconda3/include'
-# spdlog_lib_dir = '/root/miniconda3/lib'
-
-# compile_extra_args = ["-std=c++14", "-O3", "-lpthread", "-fopenmp"]
-compile_extra_args = ["-std=c++14", "-lpthread", "-fopenmp", "-g"]
+compile_extra_args = ["-std=c++14", "-O3", "-lpthread", "-fopenmp"]
+# compile_extra_args = ["-std=c++14", "-lpthread", "-fopenmp", "-g"]
 link_args = ["-fopenmp", "-g"]
 
 setup(

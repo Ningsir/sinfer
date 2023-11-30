@@ -10,7 +10,6 @@ import dgl
 
 from sinfer.data import SinferDataset
 from sinfer.dataloader import DataLoader
-from sinfer.cpp_core import gather_mem, gather_sinfer
 
 
 # 测试采样结果中外顶点和内顶点占比

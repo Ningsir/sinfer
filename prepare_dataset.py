@@ -274,11 +274,22 @@ if __name__ == "__main__":
     argparser.add_argument("--dataset", type=str, default="ogbn-products")
     argparser.add_argument("--data-path", type=str, default="/home/ningxin/data")
     argparser.add_argument("--num-parts", type=int, default=8)
-
+    argparser.add_argument(
+        "--part-method", type=str, default="metis", help="`metis` or `dne`"
+    )
+    argparser.add_argument(
+        "--dne-part-path",
+        type=str,
+        default="/home/ningxin/data/ogbn-products-dne-part8",
+        help="path of dne partitions",
+    )
     args = argparser.parse_args()
     # test()
     # process_dgl_data(args)
     # generate_test_feat('./data/test_feat', 100, 32456)
-    process_products_with_dne(
-        args, dne_part_path="/home/ningxin/data/ogbn-products-dne-part8"
-    )
+    if args.part_method == "metis":
+        process_dgl_data(args)
+    elif args.part_method == "dne":
+        process_products_with_dne(args, dne_part_path=args.dne_part_path)
+    else:
+        raise RuntimeError("Unsupported partition method: {}".format(args.method))

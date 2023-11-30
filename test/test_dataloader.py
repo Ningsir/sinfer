@@ -10,9 +10,10 @@ from torch_sparse import SparseTensor
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
-from sinfer.dataloader import DataLoader, PygDataLoader
+from sinfer.dataloader import SinferPygDataloader
 from sinfer.data import SinferDataset
 from sinfer.cpp_core import tensor_free
+from sinfer.store import FeatureStore
 
 
 def test():
@@ -90,7 +91,53 @@ def test_pyg_products():
     print("total time: {}, num nodes: {}".format(time.time() - start, num_nodes))
 
 
+def test_sinfer_pyg_dataloader_products(data_path, dma=False):
+    data = SinferDataset(data_path)
+    indptr, indices = data.indptr, data.indices
+    offsets, feat_dim = data.offsets, data.feat_dim
+    kwargs = {"batch_size": 1000, "drop_last": False, "num_workers": 8}
+    nodes = th.arange(0, data.num_nodes, dtype=th.int64)
+    infer_dataloader = SinferPygDataloader(
+        indptr, indices, fan_outs=[-1], node_idx=nodes, **kwargs
+    )
+    feat_store = FeatureStore(
+        data.feat_path, data.offsets, data.num_nodes, data.feat_dim, dma=dma
+    )
+    start = time.time()
+
+    def get_part_id(offset, n):
+        for i in range(len(offset) - 1):
+            if n >= offset[i] and n < offset[i + 1]:
+                return i
+        return len(offset) - 2
+
+    gather_nodes, gather_time = 0, 0
+    for step, (batch_size, seeds, n_id, adjs) in enumerate(infer_dataloader):
+        part_id = get_part_id(offsets, seeds[0])
+        t1 = time.time()
+        # 更新缓存: 加载对应partition的embedding进入内存
+        feat_store.update_cache(part_id)
+        x = feat_store.gather(n_id)
+        gather_time += time.time() - t1
+        gather_nodes += n_id.shape[0]
+        if dma:
+            tensor_free(x)
+        if step % 100 == 0:
+            speed = (gather_nodes * feat_dim * 4) / (gather_time * 1024 * 1024 * 1024)
+            print(
+                "num nodes: {}, gather time: {:.4f}, gather speed: {:.4f} GB/s".format(
+                    gather_nodes, gather_time, speed
+                )
+            )
+            gather_time, gather_nodes = 0, 0
+
+    print("total time: {}".format(time.time() - start))
+
+
 if __name__ == "__main__":
     os.environ["SINFER_NUM_THREADS"] = "16"
     # test_products()
-    test_pyg_products()
+    # test_pyg_products()
+    data_path = "/home/ningxin/data/ogbn-products-ssd-infer-part16"
+    test_sinfer_pyg_dataloader_products(data_path, dma=False)
+    test_sinfer_pyg_dataloader_products(data_path, dma=True)

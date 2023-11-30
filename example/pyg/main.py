@@ -43,7 +43,6 @@ def acc(out, labels, train_idx, val_idx, test_idx):
 
 
 if __name__ == "__main__":
-    default_model_path = os.path.join(os.path.dirname(__file__), "sage.pt")
     argparser = argparse.ArgumentParser("layer based inference")
     argparser.add_argument(
         "--gpu",
@@ -55,24 +54,26 @@ if __name__ == "__main__":
     argparser.add_argument("--num-hidden", type=int, default=256)
     argparser.add_argument("--num-layers", type=int, default=2)
     argparser.add_argument("--batch-size", type=int, default=1000)
-    argparser.add_argument("--model-path", type=str, default=default_model_path)
     argparser.add_argument(
         "--num-workers",
         type=int,
         default=8,
         help="Number of sampling processes. Use 0 for no extra process.",
     )
-    argparser.add_argument("--save-pred", type=str, default="")
-    argparser.add_argument("--wd", type=float, default=0)
+    argparser.add_argument("--dma", action="store_true")
+    argparser.add_argument(
+        "--data-path",
+        type=str,
+        default="/home/ningxin/data/ogbn-products-ssd-infer-part8",
+    )
     args = argparser.parse_args()
     if args.gpu >= 0:
         device = th.device("cuda:%d" % args.gpu)
     else:
         device = th.device("cpu")
     os.environ["SINFER_NUM_THREADS"] = "16"
-    data = SinferDataset("/home/ningxin/data/ogbn-products-ssd-infer-part16")
+    data = SinferDataset(args.data_path)
     print(data)
-    # run(args, data)
     nodes = th.arange(0, data.num_nodes, dtype=th.int64)
     kwargs = {"batch_size": args.batch_size, "num_workers": args.num_workers}
     dataloader = SinferPygDataloader(data.indptr, data.indices, [-1], nodes, **kwargs)
@@ -80,23 +81,31 @@ if __name__ == "__main__":
     model = SAGE(data.feat_dim, args.num_hidden, data.num_classes, args.num_layers).to(
         device
     )
-    model.load_state_dict(th.load(args.model_path))
-    for i in range(10):
+    model_path = os.path.join(os.path.dirname(__file__), f"sage{args.num_layers}.pt")
+    model.load_state_dict(th.load(model_path))
+    all_embs = []
+    for i in range(1):
         # TODO: bugfix: 一个FeatureStore被重复使用会导致系统死锁
         feat_store = FeatureStore(
-            data.feat_path, data.offsets, data.num_nodes, data.feat_dim
+            data.feat_path, data.offsets, data.num_nodes, data.feat_dim, dma=args.dma
         )
         model.eval()
         start = time.time()
         with th.no_grad():
             out = model.inference(feat_store, dataloader, device)
-        print("infer time: {} s".format(time.time() - start))
+        print("infer time: {:.4f} s".format(time.time() - start))
         out = out.gather_all()
+        all_embs.append(out)
         labels = data.lables
         train_idx, val_idx, test_idx = data.train_idx, data.val_idx, data.test_idx
         train_acc, val_acc, test_acc = acc(out, labels, train_idx, val_idx, test_idx)
         print(
-            "train acc: {}, val acc: {}, test acc: {}".format(
+            "train acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}".format(
                 train_acc, val_acc, test_acc
             )
         )
+    # 测试结果一致性
+    import numpy as np
+
+    for i in range(len(all_embs) - 1):
+        np.testing.assert_array_equal(all_embs[i].numpy(), all_embs[i + 1].numpy())

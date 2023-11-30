@@ -65,6 +65,10 @@ class SAGE(torch.nn.Module):
 
     @torch.no_grad()
     def inference(self, x_all, subgraph_loader, device):
+        import psutil
+        process = psutil.Process()
+        mem = process.memory_info().rss / (1024 * 1024 * 1024)
+        print("before infer mem: {:.4f} GB".format(mem))
         # pbar = tqdm(total=x_all.size(0) * self.num_layers)
         # pbar.set_description("Evaluating")
         num_nodes = x_all.shape[0]
@@ -108,14 +112,16 @@ class SAGE(torch.nn.Module):
                 # pbar.update(batch_size)
                 t1 = time.time()
                 if step % 100 == 0:
+                    mem = process.memory_info().rss / (1024 * 1024 * 1024)
                     print(
-                        "step: {}, sample time: {}, gather time: {}, transfer time: {}, infer time: {}".format(
-                            step, sample_time, gather_time, transfer_time, infer_time
+                        "step: {}, mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                            step, mem, sample_time, gather_time, transfer_time, infer_time
                         )
                     )
+            mem = process.memory_info().rss / (1024 * 1024 * 1024)
             print(
-                "layer: {}, sample time: {}, gather time: {}, transfer time: {}, infer time: {}".format(
-                    i, sample_time, gather_time, transfer_time, infer_time
+                "layer: {}, mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                    i, mem, sample_time, gather_time, transfer_time, infer_time
                 )
             )
             x_all = emb_mmap.tensor()
