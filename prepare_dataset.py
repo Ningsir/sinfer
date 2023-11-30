@@ -9,6 +9,73 @@ import os
 from torch_sparse import SparseTensor
 
 from sinfer.utils import coo_to_adj_list
+from sinfer.cpp_core import rand_assign_partition_nodes
+
+
+def load_dne_part_nodes(dne_part_path, num_nodes, num_parts):
+    nodes = []
+    for id in range(num_parts):
+        filename = os.path.join(dne_part_path, f"{id}.partitioned_nodes")
+        node = np.unique(np.fromfile(filename, dtype=np.int64))
+        nodes.append(node)
+    nodes_to_parts = np.zeros((num_nodes, num_parts), dtype=np.int64)
+    for id, node in enumerate(nodes):
+        nodes_to_parts[node, id] = 1
+    # nodes_to_part_id_map[i] 表示顶点i被划分到的分区ID
+    nodes_to_part_id_map = rand_assign_partition_nodes(torch.from_numpy(nodes_to_parts))
+    nodes_to_part_id_map = nodes_to_part_id_map.numpy()
+    unique_nodes = []
+    offsets = [0]
+    count = 0
+    for id in range(num_parts):
+        mask = nodes_to_part_id_map == id
+        unique_nodes.append(np.nonzero(mask)[0])
+        count += unique_nodes[-1].shape[0]
+        offsets.append(count)
+    for i in range(num_parts):
+        x = np.intersect1d(nodes[i], unique_nodes[i])
+        print(x.shape)
+    return unique_nodes, offsets
+
+
+def process_products_with_dne(args, dne_part_path):
+    num_parts = args.num_parts
+    out_path = os.path.join(
+        args.data_path, args.dataset + "-ssd-infer-dne-part{}".format(num_parts)
+    )
+    data = DglNodePropPredDataset(name=args.dataset, root=args.data_path)
+    splitted_idx = data.get_idx_split()
+    train_idx, val_idx, test_idx = (
+        splitted_idx["train"],
+        splitted_idx["valid"],
+        splitted_idx["test"],
+    )
+    graph, labels = data[0]
+    print(graph)
+
+    nfeat = graph.ndata.pop("feat").numpy()
+    labels = labels[:, 0].numpy()
+    src = graph.edges()[0].numpy()
+    dst = graph.edges()[1].numpy()
+    num_parts = args.num_parts
+    # 加载dne的分区节点
+    nodes_part, offsets = load_dne_part_nodes(
+        dne_part_path, graph.num_nodes(), num_parts
+    )
+    np_offsets = np.array(offsets, dtype=np.int64)
+    __process_data(
+        src,
+        dst,
+        nfeat,
+        labels,
+        out_path,
+        train_idx,
+        val_idx,
+        test_idx,
+        nodes_part,
+        np_offsets,
+    )
+    print("process dne data done")
 
 
 def process_dgl_data(args):
@@ -30,20 +97,9 @@ def process_dgl_data(args):
     labels = labels[:, 0].numpy()
     src = graph.edges()[0].numpy()
     dst = graph.edges()[1].numpy()
-    __process_data(
-        src, dst, nfeat, labels, num_parts, out_path, train_idx, val_idx, test_idx
-    )
 
-
-def __process_data(
-    coo_row, coo_col, feat, labels, num_parts, out_path, train_idx, val_idx, test_idx
-):
-    if not os.path.exists(out_path):
-        os.mkdir(out_path)
-    adj = coo_to_adj_list(coo_row, coo_col)
-
+    adj = coo_to_adj_list(src, dst)
     n_cuts, membership = pymetis.part_graph(num_parts, adj)
-
     print("#n_cuts: {}".format(n_cuts))
     nodes_part = []
     offsets = [0]
@@ -55,6 +111,35 @@ def __process_data(
         offsets.append(total)
     np_offsets = np.array(offsets, dtype=np.int64)
     print(np_offsets)
+    __process_data(
+        src,
+        dst,
+        nfeat,
+        labels,
+        num_parts,
+        out_path,
+        train_idx,
+        val_idx,
+        test_idx,
+        nodes_part,
+        np_offsets,
+    )
+
+
+def __process_data(
+    coo_row,
+    coo_col,
+    feat,
+    labels,
+    out_path,
+    train_idx,
+    val_idx,
+    test_idx,
+    nodes_part,
+    np_offsets,
+):
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
     # 按照nodes_part中的顺序对顶点ID进行重映射
     (
         map_coo_row,
@@ -188,9 +273,12 @@ if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--dataset", type=str, default="ogbn-products")
     argparser.add_argument("--data-path", type=str, default="/home/ningxin/data")
-    argparser.add_argument("--num-parts", type=int, default=4)
+    argparser.add_argument("--num-parts", type=int, default=8)
 
     args = argparser.parse_args()
     # test()
-    process_dgl_data(args)
+    # process_dgl_data(args)
     # generate_test_feat('./data/test_feat', 100, 32456)
+    process_products_with_dne(
+        args, dne_part_path="/home/ningxin/data/ogbn-products-dne-part8"
+    )

@@ -4,8 +4,10 @@
 #include "gather.h"
 #include "logger.h"
 #include "store.h"
+#include "utils.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("rand_assign_partition_nodes", &rand_assign_partition_nodes);
   m.def("init_spdlog",
         &spdlog::cfg::load_env_levels,
         "init spdlog with env variable");
