@@ -78,7 +78,7 @@ sinfer、mmap、mem pyg性能测试：
 |GraphSAGE两层| mmap | 175.83 |
 |GraphSAGE两层| sinfer | 95.17 |
 |GraphSAGE两层| mmap | 324.20 |
-|GraphSAGE两层| mmap | 141.6 |
+|GraphSAGE两层| sinfer | 141.6 |
 > pyg在全内存环境下，限制为4或者8G内存时OOM
 > 
 > pyg在16G内存: 2层：68.3318 S；3层：93.0755 S
