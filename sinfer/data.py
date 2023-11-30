@@ -52,13 +52,13 @@ class SinferDataset:
 
     @property
     def indptr(self):
-        indptr_ = np.fromfile(self.indptr_path, dtype=np.int64)
+        indptr_ = np.fromfile(self.indptr_path, dtype=self.conf["indptr_dtype"])
         indptr_ = th.from_numpy(indptr_)
         return indptr_
 
     @property
     def indices(self):
-        indices_ = np.fromfile(self.indices_path, dtype=np.int64)
+        indices_ = np.fromfile(self.indices_path, dtype=self.conf["indices_dtype"])
         indices_ = th.from_numpy(indices_)
         return indices_
 
