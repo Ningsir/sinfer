@@ -1,158 +1,249 @@
-import argparse
-import time
-import os
-import sys
-
-import dgl
-import numpy as np
-import torch as th
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
+import dgl
+import dgl.nn as dglnn
+from dgl.data import AsNodePredDataset
+from dgl.dataloading import DataLoader, NeighborSampler, MultiLayerFullNeighborSampler
+from ogb.nodeproppred import DglNodePropPredDataset
+import argparse
+import os
+import time
 
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-sys.path.append(parent_dir)
-from sinfer.dataloader import DataLoader
-from sinfer.data import SinferDataset
-from sinfer.cpp_core import tensor_free
 
-from sage import SAGE
+class SAGE(nn.Module):
+    def __init__(self, in_size, hid_size, out_size, num_layers):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        # three-layer GraphSAGE-mean
+        self.layers.append(dglnn.SAGEConv(in_size, hid_size, "mean"))
+        for _ in range(num_layers - 2):
+            self.layers.append(dglnn.SAGEConv(hid_size, hid_size, "mean"))
+        self.layers.append(dglnn.SAGEConv(hid_size, out_size, "mean"))
+        self.dropout = nn.Dropout(0.5)
+        self.hid_size = hid_size
+        self.out_size = out_size
+
+    def forward(self, blocks, x):
+        h = x
+        for l, (layer, block) in enumerate(zip(self.layers, blocks)):
+            h = layer(block, h)
+            if l != len(self.layers) - 1:
+                h = F.relu(h)
+                h = self.dropout(h)
+        return h
+
+    def inference(self, g, device, batch_size):
+        """Conduct layer-wise inference to get all the node embeddings."""
+        import psutil
+
+        process = psutil.Process()
+        feat = g.ndata["feat"]
+        sampler = MultiLayerFullNeighborSampler(1, prefetch_node_feats=["feat"])
+        dataloader = DataLoader(
+            g,
+            torch.arange(g.num_nodes()),
+            sampler,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=4,
+        )
+        buffer_device = torch.device("cpu")
+        pin_memory = buffer_device != device
+
+        for l, layer in enumerate(self.layers):
+            y = torch.empty(
+                g.num_nodes(),
+                self.hid_size if l != len(self.layers) - 1 else self.out_size,
+                device=buffer_device,
+                pin_memory=pin_memory,
+            )
+            sample_time, gather_time, copy_time, infer_time = 0, 0, 0, 0
+            mem = 0
+            t1 = time.time()
+            with dataloader.enable_cpu_affinity():
+                for _, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
+                    mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
+                    sample_time += time.time() - t1
+
+                    t2 = time.time()
+                    x = feat[input_nodes]
+                    gather_time += time.time() - t2
+
+                    t3 = time.time()
+                    x = x.to(device)
+                    blocks = [block.to(device) for block in blocks]
+                    torch.cuda.synchronize()
+                    copy_time += time.time() - t3
+
+                    t4 = time.time()
+                    h = layer(blocks[0], x)  # len(blocks) = 1
+                    if l != len(self.layers) - 1:
+                        h = F.relu(h)
+                        h = self.dropout(h)
+                    # by design, our output nodes are contiguous
+                    y[output_nodes[0] : output_nodes[-1] + 1] = h.to(buffer_device)
+                    torch.cuda.synchronize()
+                    infer_time += time.time() - t4
+                    t1 = time.time()
+                    mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
+            print(
+                "Infer layer: {}, peak rss mem:{:.4f} GB, sample_time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                    l, mem, sample_time, gather_time, copy_time, infer_time
+                )
+            )
+            feat = y
+        return y
 
 
 def compute_acc(pred, labels):
     """
     Compute the accuracy of prediction given the labels.
     """
-    return (th.argmax(pred, dim=1) == labels).float().sum() / len(pred)
+    return (torch.argmax(pred, dim=1) == labels).float().sum() / len(pred)
 
 
-def evaluate(
-    model, g, nfeat, labels, val_nid, test_nid, device, batch_size, num_workers=0
-):
-    """
-    Evaluate the model on the validation set specified by ``val_mask``.
-    g : The entire graph.
-    inputs : The features of all the nodes.
-    labels : The labels of all the nodes.
-    val_mask : A 0-1 mask indicating which nodes do we actually compute the accuracy for.
-    device : The GPU device to evaluate on.
-    """
+def evaluate(model, graph, dataloader):
     model.eval()
-    with th.no_grad():
-        pred = model.inference(g, nfeat, device, batch_size, num_workers)
-    model.train()
-    return (
-        compute_acc(pred[val_nid], labels[val_nid]),
-        compute_acc(pred[test_nid], labels[test_nid]),
-        pred,
+    ys = []
+    y_hats = []
+    for it, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
+        with torch.no_grad():
+            x = blocks[0].srcdata["feat"]
+            ys.append(blocks[-1].dstdata["label"])
+            y_hats.append(model(blocks, x))
+    return compute_acc(torch.cat(y_hats), torch.cat(ys))
+
+
+def layerwise_infer(device, graph, nid, model, batch_size):
+    model.eval()
+    with torch.no_grad():
+        pred = model.inference(graph, device, batch_size)  # pred in buffer_device
+        pred = pred[nid]
+        label = graph.ndata["label"][nid].to(pred.device)
+        return compute_acc(pred, label)
+
+
+def train(args, device, g, dataset, model):
+    # create sampler & dataloader
+    train_idx = dataset.train_idx.to(device)
+    val_idx = dataset.val_idx.to(device)
+    sampler = NeighborSampler(
+        [
+            int(size) for size in args.fan_outs.split(",")
+        ],  # fanout for [layer-0, layer-1, layer-2]
+        prefetch_node_feats=["feat"],
+        prefetch_labels=["label"],
+    )
+    use_uva = args.mode == "mixed"
+    train_dataloader = DataLoader(
+        g,
+        train_idx,
+        sampler,
+        device=device,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=False,
+        num_workers=0,
+        use_uva=use_uva,
     )
 
-
-def load_subtensor(nfeat, labels, seeds, input_nodes):
-    """
-    Extracts features and labels for a set of nodes.
-    """
-    batch_inputs = nfeat[input_nodes]
-    batch_labels = labels[seeds]
-    return batch_inputs, batch_labels
-
-
-#### Entry point
-def run(args, data):
-    coo_row, coo_col = data.coo()
-    graph = dgl.graph((coo_row, coo_col))
-    print(graph)
-    kwargs = {
-        "batch_size": args.batch_size,
-        "drop_last": False,
-        # 'use_uva': True,
-        "num_workers": 0,
-    }
-    infer_dataloader = DataLoader(
-        graph, data.feat_path, data.feat_dim, data.offsets, prefetch=True, **kwargs
+    val_dataloader = DataLoader(
+        g,
+        val_idx,
+        sampler,
+        device=device,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=False,
+        num_workers=0,
+        use_uva=use_uva,
     )
-    # Define model and optimizer
-    model = SAGE(
-        data.feat_dim,
-        args.num_hidden,
-        data.num_classes,
-        args.num_layers,
-        F.relu,
-        args.dropout,
-    ).to(device)
-    loss_fcn = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    data_time = 0
-    infer_time = 0
-    model.eval()
-    start = time.time()
-    with th.no_grad():
-        t1 = time.time()
-        for step, (input_nodes, seeds, blocks) in enumerate(infer_dataloader):
-            data_time += time.time() - t1
-            t2 = time.time()
-            batch_inputs = blocks[0].srcdata["feat"]
-            blocks = [block.int().to(device) for block in blocks]
-            batch_inputs_cuda = batch_inputs.to(device)
-            batch_pred = model(blocks, batch_inputs_cuda)
-            # tensor_free(batch_inputs)
-            infer_time += time.time() - t2
-            if step % 100 == 0:
-                print(blocks)
-                print(
-                    "Infer step: {}, data time: {}, infer time: {}".format(
-                        step, data_time, infer_time
-                    )
-                )
-            t1 = time.time()
 
-    infer_dataloader.shutdown()
-    print(
-        "Infer time: {}, data time: {}, infer time: {}".format(
-            time.time() - start, data_time, infer_time
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
+
+    for epoch in range(args.epoch):
+        model.train()
+        total_loss = 0
+        for it, (input_nodes, output_nodes, blocks) in enumerate(train_dataloader):
+            x = blocks[0].srcdata["feat"]
+            y = blocks[-1].dstdata["label"]
+            y_hat = model(blocks, x)
+            loss = F.cross_entropy(y_hat, y)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            total_loss += loss.item()
+        acc = evaluate(model, g, val_dataloader)
+        print(
+            "Epoch {:05d} | Loss {:.4f} | Accuracy {:.4f} ".format(
+                epoch, total_loss / (it + 1), acc.item()
+            )
         )
-    )
 
 
 if __name__ == "__main__":
-    argparser = argparse.ArgumentParser("multi-gpu training")
-    argparser.add_argument(
-        "--gpu",
-        type=int,
-        default=0,
-        help="GPU device ID. Use -1 for CPU training",
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        default="mixed",
+        choices=["cpu", "mixed", "puregpu"],
+        help="Training mode. 'cpu' for CPU training, 'mixed' for CPU-GPU mixed training, "
+        "'puregpu' for pure-GPU training.",
     )
-    argparser.add_argument("--num-epochs", type=int, default=20)
-    argparser.add_argument("--num-parts", type=int, default=8)
-    argparser.add_argument("--num-buffers", type=int, default=4)
-    argparser.add_argument("--prefetch", type=bool, default=True)
-    argparser.add_argument("--n-classes", type=int, default=47)
-    argparser.add_argument("--num-hidden", type=int, default=256)
-    argparser.add_argument("--num-layers", type=int, default=1)
-    # 5, 10, 15
-    argparser.add_argument("--fan-out", type=str, default="25,10")
-    argparser.add_argument("--batch-size", type=int, default=1000)
-    argparser.add_argument("--val-batch-size", type=int, default=10000)
-    argparser.add_argument("--log-every", type=int, default=20)
-    argparser.add_argument("--eval-every", type=int, default=1)
-    argparser.add_argument("--lr", type=float, default=0.003)
-    argparser.add_argument("--dropout", type=float, default=0.5)
-    argparser.add_argument(
-        "--num-workers",
-        type=int,
-        default=4,
-        help="Number of sampling processes. Use 0 for no extra process.",
+    parser.add_argument("--batch-size", type=int, default=1000)
+    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--num-hiddens", type=int, default=256)
+    parser.add_argument("--num-layers", type=int, default=3)
+    parser.add_argument("--dataset", type=str, default="ogbn-products")
+    parser.add_argument("--data-path", type=str, default="/home/ningxin/data/")
+    # train arguments
+    parser.add_argument("--train", action="store_true")
+    parser.add_argument("--fan-outs", type=str, default="5,10,15")
+    parser.add_argument("--epoch", type=int, default=20)
+    args = parser.parse_args()
+    if not torch.cuda.is_available():
+        args.mode = "cpu"
+    print(f"{args.mode} mode.")
+
+    # load and preprocess dataset
+    print("Loading data")
+    dataset = AsNodePredDataset(
+        DglNodePropPredDataset(args.dataset, root=args.data_path)
     )
-    argparser.add_argument("--save-pred", type=str, default="")
-    argparser.add_argument("--wd", type=float, default=0)
-    args = argparser.parse_args()
-    # if args.gpu >= 0:
-    #     device = th.device("cuda:%d" % args.gpu)
-    # else:
-    #     device = th.device("cpu")
-    device = th.device("cuda:%d" % args.gpu)
-    # device = th.device("cpu")
-    os.environ["SINFER_NUM_THREADS"] = "16"
-    data = SinferDataset("/home/data/ogbn-products-ssd-infer")
-    print(data)
-    run(args, data)
+    g = dataset[0]
+    g = g.to("cuda" if args.mode == "puregpu" else "cpu")
+    device = torch.device("cpu" if args.mode == "cpu" else "cuda")
+
+    # create GraphSAGE model
+    in_size = g.ndata["feat"].shape[1]
+    out_size = dataset.num_classes
+    model = SAGE(in_size, args.num_hiddens, out_size, args.num_layers).to(device)
+    model_path = os.path.join(os.path.dirname(__file__), f"sage{args.num_layers}.pt")
+    if args.train:
+        # model training
+        print("Training...")
+        train(args, device, g, dataset, model)
+        torch.save(model.state_dict(), model_path)
+        model.eval()
+        # test the model
+        print("Testing...")
+        acc = layerwise_infer(
+            device, g, dataset.test_idx, model, batch_size=args.batch_size
+        )
+        print("Test Accuracy {:.4f}".format(acc.item()))
+    else:
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
+        # test the model
+        print("Testing...")
+        start = time.time()
+        acc = layerwise_infer(
+            device, g, dataset.test_idx, model, batch_size=args.batch_size
+        )
+        print(
+            "Test Accuracy {:.4f}, Infer Time: {:.4f} S".format(
+                acc.item(), time.time() - start
+            )
+        )
