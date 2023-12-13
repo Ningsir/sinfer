@@ -66,6 +66,7 @@ class SAGE(torch.nn.Module):
     @torch.no_grad()
     def inference(self, x_all, subgraph_loader, device):
         import psutil
+
         process = psutil.Process()
         mem = process.memory_info().rss / (1024 * 1024 * 1024)
         print("before infer mem: {:.4f} GB".format(mem))
@@ -81,16 +82,18 @@ class SAGE(torch.nn.Module):
             filename = "./embedding-{}.bin".format(i)
             emb_mmap = MapTensor(filename, (num_nodes, self.out_shape[i]))
             sample_time, gather_time, transfer_time, infer_time = 0, 0, 0, 0
+            mem = 0
             t1 = time.time()
             for step, (batch_size, n_id, adj, batch) in enumerate(subgraph_loader):
                 sample_time += time.time() - t1
-                t2 = time.time()
+                mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
 
+                t2 = time.time()
                 # gather
                 x = x_all[n_id]
                 gather_time += time.time() - t2
-                t3 = time.time()
 
+                t3 = time.time()
                 # transfer
                 x = x.to(device)
                 edge_index, _, size = adj[0].to(device)
@@ -98,8 +101,8 @@ class SAGE(torch.nn.Module):
                 total_edges += edge_index.size(1)
                 torch.cuda.synchronize()
                 transfer_time += time.time() - t3
-                t4 = time.time()
 
+                t4 = time.time()
                 # infer
                 x = self.convs[i]((x, x_target), edge_index)
                 if i != self.num_layers - 1:
@@ -111,16 +114,10 @@ class SAGE(torch.nn.Module):
                 emb_mmap.write_data(batch, x_cpu)
                 # pbar.update(batch_size)
                 t1 = time.time()
-                if step % 100 == 0:
-                    mem = process.memory_info().rss / (1024 * 1024 * 1024)
-                    print(
-                        "step: {}, mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
-                            step, mem, sample_time, gather_time, transfer_time, infer_time
-                        )
-                    )
-            mem = process.memory_info().rss / (1024 * 1024 * 1024)
+                mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
+            mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "layer: {}, mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                "layer: {}, peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
                     i, mem, sample_time, gather_time, transfer_time, infer_time
                 )
             )

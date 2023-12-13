@@ -60,6 +60,7 @@ class SAGE(torch.nn.Module):
                 0,
                 0,
             )
+            mem = 0
             # 创建一个用于存储embedding的store
             filename = "./embedding-{}.bin".format(i)
             emb_store = EmbeddingStore(
@@ -68,6 +69,7 @@ class SAGE(torch.nn.Module):
             t1 = time.time()
             for step, (batch_size, seeds, n_id, adjs) in enumerate(loader):
                 sample_time += time.time() - t1
+                mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
 
                 t2 = time.time()
                 part_id = get_part_id(offsets, seeds[0])
@@ -100,18 +102,7 @@ class SAGE(torch.nn.Module):
                 emb_store.write_data(seeds, x_cpu)
                 # pbar.update(batch_size)
                 t1 = time.time()
-                if step % 100 == 0:
-                    mem = process.memory_info().rss / (1024 * 1024 * 1024)
-                    print(
-                        "step: {}, mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
-                            step,
-                            mem,
-                            sample_time,
-                            gather_time,
-                            transfer_time,
-                            infer_time,
-                        )
-                    )
+                mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             t5 = time.time()
             # 同步: 等到所有数据写入磁盘
             emb_store.flush()
@@ -119,9 +110,9 @@ class SAGE(torch.nn.Module):
             # 清除缓存
             x_all.clear_cache()
             x_all = emb_store
-            mem = process.memory_info().rss / (1024 * 1024 * 1024)
+            mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "layer: {},  mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}, flush time: {:.4f}".format(
+                "layer: {},  peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}, flush time: {:.4f}".format(
                     i,
                     mem,
                     sample_time,

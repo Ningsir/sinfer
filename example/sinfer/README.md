@@ -26,3 +26,8 @@
     ```bash
     python main.py --data-path /home/data/ogbn-products-ssd-infer-part8 --num-layers 2
     ```
+
+4. 一致性测试：执行全局推理时，使用`--runs`选项设置推理的轮数，最后会比较计算得到的embedding结果是否一致。
+    ```bash
+    python main.py --data-path /home/data/ogbn-products-ssd-infer-part8 --num-layers 2 --runs 10
+    ```
