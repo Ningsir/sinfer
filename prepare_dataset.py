@@ -1,4 +1,5 @@
 import pymetis
+import time
 import argparse
 from ogb.nodeproppred import DglNodePropPredDataset
 import scipy
@@ -97,10 +98,13 @@ def process_dgl_data(args):
     labels = labels[:, 0].numpy()
     src = graph.edges()[0].numpy()
     dst = graph.edges()[1].numpy()
-
-    adj = coo_to_adj_list(src, dst)
-    n_cuts, membership = pymetis.part_graph(num_parts, adj)
-    print("#n_cuts: {}".format(n_cuts))
+    indptr, indices, edges = graph.adj_sparse("csr")
+    indptr = indptr.tolist()
+    indices = indices.tolist()
+    # adj = coo_to_adj_list(src, dst)
+    start = time.time()
+    n_cuts, membership = pymetis.part_graph(num_parts, xadj=indptr, adjncy=indices)
+    print("#n_cuts: {}, partition time: {:.4f} s".format(n_cuts, time.time() - start))
     nodes_part = []
     offsets = [0]
     total = 0
@@ -116,13 +120,13 @@ def process_dgl_data(args):
         dst,
         nfeat,
         labels,
-        num_parts,
         out_path,
         train_idx,
         val_idx,
         test_idx,
         nodes_part,
         np_offsets,
+        num_classes=data.num_classes,
     )
 
 
@@ -137,6 +141,7 @@ def __process_data(
     test_idx,
     nodes_part,
     np_offsets,
+    num_classes=None,
 ):
     if not os.path.exists(out_path):
         os.mkdir(out_path)
@@ -158,10 +163,11 @@ def __process_data(
 
     # coo转为csc
     sparse_tensor = SparseTensor.from_edge_index(
-        (torch.from_numpy(map_coo_row), torch.from_numpy(map_coo_col))
+        (torch.from_numpy(map_coo_row), torch.from_numpy(map_coo_col)),
+        sparse_sizes=(num_nodes, num_nodes),
     )
     indptr, indices, _ = sparse_tensor.csc()
-
+    assert indptr.shape[0] == num_nodes + 1, f"{indptr.shape[0]} != {num_nodes + 1}"
     indptr = indptr.numpy()
     indices = indices = indices.numpy()
 
@@ -178,7 +184,9 @@ def __process_data(
     config = {
         "num_nodes": num_nodes,
         "feat_dim": map_feat.shape[-1],
-        "num_classes": np.unique(labels).shape[0],
+        "num_classes": num_classes
+        if num_classes is not None
+        else np.unique(labels).shape[0],
         "indptr_dtype": str(indptr.dtype),
         "indices_dtype": str(indices.dtype),
         "coo_dtype": str(map_coo.dtype),
@@ -271,7 +279,12 @@ def generate_test_feat(out_path, feat_dim, num_nodes):
 if __name__ == "__main__":
     # Parse arguments
     argparser = argparse.ArgumentParser()
-    argparser.add_argument("--dataset", type=str, default="ogbn-products")
+    argparser.add_argument(
+        "--dataset",
+        type=str,
+        default="ogbn-papers100M",
+        help="dataset name: ogbn-products, ogbn-papers100M",
+    )
     argparser.add_argument("--data-path", type=str, default="/home/ningxin/data")
     argparser.add_argument("--num-parts", type=int, default=8)
     argparser.add_argument(
