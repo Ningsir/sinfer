@@ -33,13 +33,16 @@ class SAGE(nn.Module):
                 h = self.dropout(h)
         return h
 
-    def inference(self, g, device, batch_size):
+    def inference(self, g, device, batch_size, num_workers):
         """Conduct layer-wise inference to get all the node embeddings."""
         import psutil
 
         process = psutil.Process()
+        mem = process.memory_info().rss / (1024 * 1024 * 1024)
+        print("before infer memory usage: %.4fG" % mem)
         feat = g.ndata["feat"]
-        sampler = MultiLayerFullNeighborSampler(1, prefetch_node_feats=["feat"])
+        del g.ndata["feat"]
+        sampler = MultiLayerFullNeighborSampler(1)
         dataloader = DataLoader(
             g,
             torch.arange(g.num_nodes()),
@@ -47,7 +50,7 @@ class SAGE(nn.Module):
             batch_size=batch_size,
             shuffle=False,
             drop_last=False,
-            num_workers=4,
+            num_workers=num_workers,
         )
         buffer_device = torch.device("cpu")
         pin_memory = buffer_device != device
@@ -62,11 +65,11 @@ class SAGE(nn.Module):
             sample_time, gather_time, copy_time, infer_time = 0, 0, 0, 0
             mem = 0
             t1 = time.time()
+            start = time.time()
             with dataloader.enable_cpu_affinity():
                 for _, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
                     mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
                     sample_time += time.time() - t1
-
                     t2 = time.time()
                     x = feat[input_nodes]
                     gather_time += time.time() - t2
@@ -89,8 +92,14 @@ class SAGE(nn.Module):
                     t1 = time.time()
                     mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "Infer layer: {}, peak rss mem:{:.4f} GB, sample_time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
-                    l, mem, sample_time, gather_time, copy_time, infer_time
+                "Infer layer: {}, peak rss mem:{:.4f} GB, time: {:.4f}, sample_time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                    l,
+                    mem,
+                    time.time() - start,
+                    sample_time,
+                    gather_time,
+                    copy_time,
+                    infer_time,
                 )
             )
             feat = y
@@ -116,10 +125,12 @@ def evaluate(model, graph, dataloader):
     return compute_acc(torch.cat(y_hats), torch.cat(ys))
 
 
-def layerwise_infer(device, graph, nid, model, batch_size):
+def layerwise_infer(device, graph, nid, model, batch_size, num_workers):
     model.eval()
     with torch.no_grad():
-        pred = model.inference(graph, device, batch_size)  # pred in buffer_device
+        pred = model.inference(
+            graph, device, batch_size, num_workers
+        )  # pred in buffer_device
         pred = pred[nid]
         label = graph.ndata["label"][nid].to(pred.device)
         return compute_acc(pred, label)
@@ -168,7 +179,7 @@ def train(args, device, g, dataset, model):
         total_loss = 0
         for it, (input_nodes, output_nodes, blocks) in enumerate(train_dataloader):
             x = blocks[0].srcdata["feat"]
-            y = blocks[-1].dstdata["label"]
+            y = blocks[-1].dstdata["label"].to(torch.int64)
             y_hat = model(blocks, x)
             loss = F.cross_entropy(y_hat, y)
             opt.zero_grad()
@@ -197,12 +208,13 @@ if __name__ == "__main__":
     parser.add_argument("--num-hiddens", type=int, default=256)
     parser.add_argument("--num-layers", type=int, default=3)
     parser.add_argument("--dataset", type=str, default="ogbn-products")
-    parser.add_argument("--data-path", type=str, default="/home/ningxin/data/")
+    parser.add_argument("--data-path", type=str, default="/workspace/ningxin/data/")
     # train arguments
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--fan-outs", type=str, default="5,10,15")
     parser.add_argument("--epoch", type=int, default=20)
     args = parser.parse_args()
+    print(args)
     if not torch.cuda.is_available():
         args.mode = "cpu"
     print(f"{args.mode} mode.")
@@ -220,7 +232,9 @@ if __name__ == "__main__":
     in_size = g.ndata["feat"].shape[1]
     out_size = dataset.num_classes
     model = SAGE(in_size, args.num_hiddens, out_size, args.num_layers).to(device)
-    model_path = os.path.join(os.path.dirname(__file__), f"sage{args.num_layers}.pt")
+    model_path = os.path.join(
+        os.path.dirname(__file__), f"{args.dataset}-sage{args.num_layers}.pt"
+    )
     if args.train:
         # model training
         print("Training...")
@@ -230,7 +244,12 @@ if __name__ == "__main__":
         # test the model
         print("Testing...")
         acc = layerwise_infer(
-            device, g, dataset.test_idx, model, batch_size=args.batch_size
+            device,
+            g,
+            dataset.test_idx,
+            model,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
         )
         print("Test Accuracy {:.4f}".format(acc.item()))
     else:
@@ -240,7 +259,12 @@ if __name__ == "__main__":
         print("Testing...")
         start = time.time()
         acc = layerwise_infer(
-            device, g, dataset.test_idx, model, batch_size=args.batch_size
+            device,
+            g,
+            dataset.test_idx,
+            model,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
         )
         print(
             "Test Accuracy {:.4f}, Infer Time: {:.4f} S".format(

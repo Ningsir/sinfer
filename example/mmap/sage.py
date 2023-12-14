@@ -4,6 +4,7 @@ import numpy as np
 from tqdm import tqdm
 from torch_geometric.nn import SAGEConv
 import time
+import os
 
 
 class MapTensor:
@@ -64,7 +65,7 @@ class SAGE(torch.nn.Module):
         return x.log_softmax(dim=-1)
 
     @torch.no_grad()
-    def inference(self, x_all, subgraph_loader, device):
+    def inference(self, x_all, subgraph_loader, device, data_path):
         import psutil
 
         process = psutil.Process()
@@ -79,7 +80,7 @@ class SAGE(torch.nn.Module):
         total_edges = 0
         for i in range(self.num_layers):
             # create a mmap tensor
-            filename = "./embedding-{}.bin".format(i)
+            filename = os.path.join(data_path, "embedding-{}.bin".format(i))
             emb_mmap = MapTensor(filename, (num_nodes, self.out_shape[i]))
             sample_time, gather_time, transfer_time, infer_time = 0, 0, 0, 0
             mem = 0

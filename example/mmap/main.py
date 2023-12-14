@@ -205,7 +205,7 @@ def train(epoch, train_loader):
             optimizer.zero_grad()
             out = model(x, adjs)[:batch_size]
 
-            y = labels[batch].squeeze().to(device)
+            y = labels[batch].squeeze().to(device).to(torch.int64)
             loss = F.cross_entropy(out, y)
             loss.backward()
             optimizer.step()
@@ -252,6 +252,7 @@ if __name__ == "__main__":
     argparser.add_argument("--num-workers", type=int, default=8)
     argparser.add_argument("--num-hiddens", type=int, default=256)
     argparser.add_argument("--num-layers", type=int, default=2)
+    argparser.add_argument("--dataset", type=str, default="ogbn-products")
     argparser.add_argument(
         "--data-path", type=str, default="/home/data/ogbn-products-mmap"
     )
@@ -260,7 +261,7 @@ if __name__ == "__main__":
     argparser.add_argument("--fan-outs", type=str, default="15, 10")
     argparser.add_argument("--epoch", type=int, default=20)
     args = argparser.parse_args()
-
+    print(args)
     (
         indptr,
         indices,
@@ -276,7 +277,9 @@ if __name__ == "__main__":
     torch.cuda.set_device(device)
     model = SAGE(feat_dim, args.num_hiddens, num_classes, num_layers=args.num_layers)
     model = model.to(device)
-    model_path = os.path.join(os.path.dirname(__file__), f"sage{args.num_layers}.pt")
+    model_path = os.path.join(
+        os.path.dirname(__file__), f"{args.dataset}-sage{args.num_layers}.pt"
+    )
     if not args.train:
         model.load_state_dict(torch.load(model_path))
         all_nodes = torch.arange(0, num_nodes, dtype=torch.int64)
@@ -292,7 +295,7 @@ if __name__ == "__main__":
         # full_inference()
         model.eval()
         start = time.time()
-        out = model.inference(features, full_infer_loader, device)
+        out = model.inference(features, full_infer_loader, device, args.data_path)
         train_acc, val_acc, test_acc = acc(out, labels, split_idx)
         print(
             "infer time: {:.4f}, train acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}".format(
