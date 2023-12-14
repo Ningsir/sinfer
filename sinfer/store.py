@@ -18,7 +18,7 @@ class FeatureStore:
         dtype=torch.float32,
         num_writer_workers: int = 2,
         writer_seq: bool = True,
-        dma: bool = False
+        dma: bool = False,
     ) -> None:
         self.store = cpp_core.FeatureStore(
             file_path,
@@ -29,11 +29,12 @@ class FeatureStore:
             dtype,
             num_writer_workers,
             writer_seq,
-            dma
+            dma,
         )
         self.offsets = offsets
         self.num = num
         self.dma = dma
+        self.file_path = file_path
 
     def gather(self, nodes: Tensor):
         return self.store.gather(nodes)
@@ -53,6 +54,7 @@ class FeatureStore:
     def clear_cache(self):
         self.store.clear_cache()
 
+
 class EmbeddingStore(FeatureStore):
     def __init__(
         self,
@@ -64,11 +66,11 @@ class EmbeddingStore(FeatureStore):
         dtype=torch.float32,
         num_writer_workers: int = 2,
         writer_seq: bool = True,
-        dma: bool = False
+        dma: bool = False,
     ) -> None:
         if not os.path.exists(file_path):
             open(file_path, "w").close()
-        self.file_path = file_path
+        # self.file_path = file_path
         super().__init__(
             file_path,
             offsets,
@@ -78,7 +80,7 @@ class EmbeddingStore(FeatureStore):
             dtype,
             num_writer_workers,
             writer_seq,
-            dma
+            dma,
         )
 
     def __del__(self):

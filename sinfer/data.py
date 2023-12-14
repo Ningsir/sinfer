@@ -63,7 +63,7 @@ class SinferDataset:
         return indices_
 
     @property
-    def lables(self):
+    def labels(self):
         labels_ = np.fromfile(self.labels_path, dtype=self.conf["labels_dtype"])
         labels_ = th.from_numpy(labels_)
         return labels_
