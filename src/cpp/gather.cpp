@@ -1,8 +1,9 @@
 #include "gather.h"
 
 #include "logger.h"
+#include "utils.h"
 
-#define ALIGNMENT 4096
+#define PAGE_SIZE 4096
 
 torch::Tensor gather_cache_ssd_dma_with_fd(int feature_fd,
                                            const torch::Tensor& idx,
@@ -101,6 +102,7 @@ torch::Tensor gather_range_with_fd(int fd,
                                    int64_t start,
                                    int64_t end,
                                    int64_t feature_dim) {
+  int num_threads = atoi(getenv("SINFER_NUM_THREADS"));
   int64_t feature_size = feature_dim * sizeof(float);
 
   int64_t num = end - start;
@@ -114,10 +116,38 @@ torch::Tensor gather_range_with_fd(int fd,
                      .device(torch::kCPU)
                      .requires_grad(false);
   torch::Tensor output_tensor = torch::empty({num, feature_dim}, options);
-
-  if (pread(fd, output_tensor.data_ptr(), total_size, offset) == -1) {
-    SPDLOG_ERROR("pread ERROR: {}", strerror(errno));
-    throw std::runtime_error("gather_range_with_fd pread ERROR");
+  // 单线程读取
+  if (total_size < num_threads * PAGE_SIZE) {
+    if (pread_wrapper(fd, output_tensor.data_ptr(), total_size, offset) == -1) {
+      SPDLOG_ERROR("pread ERROR: {}", strerror(errno));
+      throw std::runtime_error("gather_range_with_fd pread ERROR");
+    }
+  }
+  // 多线程读取
+  else {
+    int64_t count_pre_thread = total_size / num_threads;
+#pragma omp parallel for num_threads(num_threads)
+    for (int64_t i = 0; i < num_threads; i++) {
+      int64_t offset = i * count_pre_thread;
+      if (pread_wrapper(fd,
+                        ((char*)output_tensor.data_ptr()) + offset,
+                        count_pre_thread,
+                        offset) == -1) {
+        SPDLOG_ERROR("pread ERROR: {}", strerror(errno));
+        throw std::runtime_error("gather_range_with_fd pread ERROR");
+      }
+    }
+    if (total_size % num_threads != 0) {
+      int64_t count_last_thread = total_size % num_threads;
+      int64_t offset = count_pre_thread * num_threads;
+      if (pread_wrapper(fd,
+                        ((char*)output_tensor.data_ptr()) + offset,
+                        count_last_thread,
+                        offset) == -1) {
+        SPDLOG_ERROR("pread ERROR: {}", strerror(errno));
+        throw std::runtime_error("gather_range_with_fd pread ERROR");
+      }
+    }
   }
   return output_tensor;
 }
@@ -157,10 +187,10 @@ torch::Tensor gather_ssd_with_fd(int feature_fd,
 #pragma omp parallel for num_threads(num_threads)
   for (int64_t n = 0; n < num_idx; n++) {
     int64_t offset = idx_data[n] * feature_size;
-    if (pread(feature_fd,
-              (char*)out_data + n * feature_size,
-              feature_size,
-              offset) == -1) {
+    if (pread_wrapper(feature_fd,
+                      (char*)out_data + n * feature_size,
+                      feature_size,
+                      offset) == -1) {
       SPDLOG_ERROR("pread ERROR: {}", strerror(errno));
       throw std::runtime_error("gather_ssd_with_fd pread ERROR");
     }
@@ -226,7 +256,7 @@ void ssd_gather_fd_(int fd,
   for (int64_t i = 0; i < num; i++) {
     int64_t ssd_offset = ssd_node_ptr[i] * feature_size;
     int64_t output_offset = ssd_idx_ptr[i] * feature_size;
-    if (pread(
+    if (pread_wrapper(
             fd, (char*)output_ptr + output_offset, feature_size, ssd_offset) ==
         -1) {
       SPDLOG_ERROR("pread ERROR: {}", strerror(errno));
@@ -265,9 +295,9 @@ torch::Tensor gather_cache_ssd_with_fd(int fd,
                      .requires_grad(false);
   torch::Tensor output = torch::empty({num_idx, feature_dim}, options);
 
-  // cache_gather_(cache_node_data, cache_idx, cache, cache_start, feature_dim,
-  // output); ssd_gather_(feature_file, ssd_node_data, ssd_idx, feature_dim,
-  // output);
+  // cache_gather_(cache_node_data, cache_idx, cache, cache_start,
+  // feature_dim, output); ssd_gather_(feature_file, ssd_node_data, ssd_idx,
+  // feature_dim, output);
   std::thread t1(cache_gather_,
                  cache_node_data,
                  cache_idx,

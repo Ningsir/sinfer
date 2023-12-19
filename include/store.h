@@ -22,6 +22,7 @@
 
 #include "gather.h"
 #include "logger.h"
+#include "utils.h"
 
 #define ALIGNMENT 4096
 
@@ -143,7 +144,8 @@ class ReadNextPartition {
         int64_t size =
             offsets_in_bytes_[part_id_ + 1] - offsets_in_bytes_[part_id_];
 
-        if (pread(fd_, (char *)mem_, size, offsets_in_bytes_[part_id_]) == -1) {
+        if (pread_wrapper(
+                fd_, (char *)mem_, size, offsets_in_bytes_[part_id_]) == -1) {
           SPDLOG_ERROR("pread ERROR: {}, size={}, offset={}",
                        errno,
                        size,
@@ -258,8 +260,8 @@ class WritePartition {
       for (int64_t i = 0; i < n; i++) {
         int64_t data_offset = i * row_size;
         int64_t offset = batch_ptr[i] * row_size;
-        if (pwrite(fd_, (char *)data_ptr + data_offset, row_size, offset) ==
-            -1) {
+        if (pwrite_wrapper(
+                fd_, (char *)data_ptr + data_offset, row_size, offset) == -1) {
           SPDLOG_ERROR(
               "pwrite ERROR: {}, node id={}, data offset={}, size={}, file "
               "offset={}",
@@ -276,7 +278,8 @@ class WritePartition {
       int64_t end = batch_ptr[n - 1];
       int64_t total_size = n * row_size;
       int64_t file_offset = start * row_size;
-      if (pwrite(fd_, (char *)data_ptr, total_size, file_offset) == -1) {
+      if (pwrite_wrapper(fd_, (char *)data_ptr, total_size, file_offset) ==
+          -1) {
         SPDLOG_ERROR(
             "pwrite ERROR: {}, node({}-{}), total_size={}, file offset={}",
             strerror(errno),
@@ -342,7 +345,9 @@ class FeatureStore {
         dim_(dim),
         prefetch_(prefetch),
         dtype_(dtype),
-        dma_(dma) {
+        dma_(dma),
+        cache_ptr_(nullptr),
+        cache_part_id_(INVALID_PART_ID) {
     createFileIfNotExists(file_path_);
     int flags = O_RDWR;
     fd_ = open(file_path_.c_str(), flags);
@@ -379,7 +384,6 @@ class FeatureStore {
           offsets_in_bytes_[i + 1] - offsets_in_bytes_[i], max_size_in_bytes_);
     }
 
-    cache_part_id_ = INVALID_PART_ID;
     reader_ = std::make_unique<ReadNextPartition>(fd_, offsets_in_bytes_);
     reader_->start();
 
@@ -433,10 +437,10 @@ class FeatureStore {
         }
         reader_->move_to_cache(cache_ptr_, size_in_bytes, part_id);
       } else {
-        if (pread(fd_,
-                  (void *)cache_ptr_,
-                  size_in_bytes,
-                  offsets_in_bytes_[part_id]) == -1) {
+        if (pread_wrapper(fd_,
+                          (void *)cache_ptr_,
+                          size_in_bytes,
+                          offsets_in_bytes_[part_id]) == -1) {
           SPDLOG_ERROR("Unable to read part_id={}\nError: {}", part_id, errno);
           throw std::runtime_error("Unable to read part_id=" + part_id);
         }
