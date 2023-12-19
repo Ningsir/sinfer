@@ -29,7 +29,7 @@ setup(
         ),
         cpp_extension.CppExtension(
             "cpp_core",
-            ["src/cpp/gather.cpp", "src/cpp/free.cpp", "src/cpp/api.cpp"],
+            ["src/cpp/gather.cpp", "src/cpp/free.cpp", "src/cpp/api.cpp", "src/cpp/utils.cpp"],
             libraries=["spdlog"],
             extra_compile_args=compile_extra_args,
             extra_link_args=link_args,
