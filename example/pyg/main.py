@@ -21,10 +21,10 @@ argparser.add_argument("--num-layers", type=int, default=2)
 argparser.add_argument(
     "--dataset",
     type=str,
-    default="ogbn-products",
+    default="ogbn-papers100M",
     help="dataset name: ogbn-products, ogbn-papers100M",
 )
-argparser.add_argument("--data-path", type=str, default="/home/ningxin/data/")
+argparser.add_argument("--data-path", type=str, default="/workspace/ningxin/data/")
 # train arguments
 argparser.add_argument("--train", action="store_true")
 argparser.add_argument("--fan-outs", type=str, default="15,10")
@@ -123,7 +123,7 @@ class SAGE(torch.nn.Module):
                 t1 = time.time()
                 mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "Layer: {}, peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                "layer: {}, peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
                     i, mem, sample_time, gather_time, transfer_time, infer_time
                 )
             )
@@ -212,6 +212,6 @@ else:
     start = time.time()
     train_acc, val_acc, test_acc = test()
     print(
-        f"Infer time: {time.time() - start}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, "
+        f"infer time: {time.time() - start}, Train: {train_acc:.4f}, Val: {val_acc:.4f}, "
         f"Test: {test_acc:.4f}"
     )

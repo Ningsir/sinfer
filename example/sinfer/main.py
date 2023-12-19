@@ -15,10 +15,10 @@ from sinfer.store import FeatureStore
 from sage import SAGE
 
 
-def acc(out, labels, train_idx, val_idx, test_idx):
+def acc(out, labels, train_idx, val_idx, test_idx, dataset_name):
     from ogb.nodeproppred import Evaluator
 
-    evaluator = Evaluator(name="ogbn-products")
+    evaluator = Evaluator(name=dataset_name)
     y_true = labels.reshape(-1, 1)
     y_pred = out.argmax(dim=-1, keepdim=True)
     train_acc = evaluator.eval(
@@ -53,26 +53,28 @@ if __name__ == "__main__":
     argparser.add_argument("--n-classes", type=int, default=47)
     argparser.add_argument("--num-hidden", type=int, default=256)
     argparser.add_argument("--num-layers", type=int, default=2)
-    argparser.add_argument("--batch-size", type=int, default=1000)
+    argparser.add_argument("--batch-size", type=int, default=10000)
     argparser.add_argument("--runs", type=int, default=1)
     argparser.add_argument(
         "--num-workers",
         type=int,
-        default=16,
+        default=8,
         help="Number of sampling processes. Use 0 for no extra process.",
     )
     argparser.add_argument("--dma", action="store_true")
+    argparser.add_argument("--dataset", type=str, default="ogbn-papers100M")
     argparser.add_argument(
         "--data-path",
         type=str,
-        default="/home/ningxin/data/ogbn-products-ssd-infer-part8",
+        default="/mnt/ningxin/data/ogbn-papers100M-ssd-infer-part8",
     )
     args = argparser.parse_args()
+    print(args)
     if args.gpu >= 0:
         device = th.device("cuda:%d" % args.gpu)
     else:
         device = th.device("cpu")
-    os.environ["SINFER_NUM_THREADS"] = "16"
+    os.environ["SINFER_NUM_THREADS"] = "64"
     data = SinferDataset(args.data_path)
     print(data)
     nodes = th.arange(0, data.num_nodes, dtype=th.int64)
@@ -82,7 +84,9 @@ if __name__ == "__main__":
     model = SAGE(data.feat_dim, args.num_hidden, data.num_classes, args.num_layers).to(
         device
     )
-    model_path = os.path.join(os.path.dirname(__file__), f"sage{args.num_layers}.pt")
+    model_path = os.path.join(
+        os.path.dirname(__file__), f"{args.dataset}-sage{args.num_layers}.pt"
+    )
     model.load_state_dict(th.load(model_path))
     all_embs = []
     for i in range(args.runs):
@@ -97,9 +101,11 @@ if __name__ == "__main__":
         print("infer time: {:.4f} s".format(time.time() - start))
         out = out.gather_all()
         all_embs.append(out)
-        labels = data.lables
+        labels = data.labels
         train_idx, val_idx, test_idx = data.train_idx, data.val_idx, data.test_idx
-        train_acc, val_acc, test_acc = acc(out, labels, train_idx, val_idx, test_idx)
+        train_acc, val_acc, test_acc = acc(
+            out, labels, train_idx, val_idx, test_idx, args.dataset
+        )
         print(
             "train acc: {:.4f}, val acc: {:.4f}, test acc: {:.4f}".format(
                 train_acc, val_acc, test_acc

@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from torch_geometric.nn import SAGEConv
 import time
+import os
 
 from sinfer.store import FeatureStore, EmbeddingStore
 from sinfer.cpp_core import tensor_free
@@ -52,6 +53,7 @@ class SAGE(torch.nn.Module):
         num_nodes = x_all.num
         offsets = x_all.offsets
         dma = x_all.dma
+        file_dir = os.path.dirname(x_all.file_path)
         for i in range(self.num_layers):
             sample_time, gather_time, transfer_time, infer_time, flush_time = (
                 0,
@@ -62,7 +64,7 @@ class SAGE(torch.nn.Module):
             )
             mem = 0
             # 创建一个用于存储embedding的store
-            filename = "./embedding-{}.bin".format(i)
+            filename = os.path.join(file_dir, "embedding-{}.bin".format(i))
             emb_store = EmbeddingStore(
                 filename, offsets=offsets, num=num_nodes, dim=self.out_shape[i], dma=dma
             )
@@ -112,7 +114,7 @@ class SAGE(torch.nn.Module):
             x_all = emb_store
             mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "layer: {},  peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}, flush time: {:.4f}".format(
+                "layer: {},  peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}, write time: {:.4f}".format(
                     i,
                     mem,
                     sample_time,

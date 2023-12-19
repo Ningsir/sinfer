@@ -92,7 +92,7 @@ class SAGE(nn.Module):
                     t1 = time.time()
                     mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "Infer layer: {}, peak rss mem:{:.4f} GB, time: {:.4f}, sample_time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
+                "layer: {}, peak rss mem: {:.4f} GB, time: {:.4f}, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
                     l,
                     mem,
                     time.time() - start,
@@ -267,7 +267,7 @@ if __name__ == "__main__":
             num_workers=args.num_workers,
         )
         print(
-            "Test Accuracy {:.4f}, Infer Time: {:.4f} S".format(
-                acc.item(), time.time() - start
+            "infer time: {:.4f}, Test Accuracy {:.4f}".format(
+                time.time() - start, acc.item()
             )
         )

@@ -82,7 +82,7 @@ class SAGE(torch.nn.Module):
             # create a mmap tensor
             filename = os.path.join(data_path, "embedding-{}.bin".format(i))
             emb_mmap = MapTensor(filename, (num_nodes, self.out_shape[i]))
-            sample_time, gather_time, transfer_time, infer_time = 0, 0, 0, 0
+            sample_time, gather_time, transfer_time, infer_time, write_time = 0, 0, 0, 0, 0
             mem = 0
             t1 = time.time()
             for step, (batch_size, n_id, adj, batch) in enumerate(subgraph_loader):
@@ -111,15 +111,17 @@ class SAGE(torch.nn.Module):
                 torch.cuda.synchronize()
                 infer_time += time.time() - t4
 
+                t5 = time.time()
                 x_cpu = x.to(torch.device("cpu"))
                 emb_mmap.write_data(batch, x_cpu)
+                write_time += time.time() - t5
                 # pbar.update(batch_size)
                 t1 = time.time()
                 mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
-                "layer: {}, peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
-                    i, mem, sample_time, gather_time, transfer_time, infer_time
+                "layer: {}, peak rss mem: {:.4f} GB, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}, write time: {:.4f}".format(
+                    i, mem, sample_time, gather_time, transfer_time, infer_time, write_time
                 )
             )
             x_all = emb_mmap.tensor()
