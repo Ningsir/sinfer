@@ -17,6 +17,7 @@ argparser.add_argument("--batch-size", type=int, default=1000)
 argparser.add_argument("--num-workers", type=int, default=8)
 argparser.add_argument("--num-hiddens", type=int, default=256)
 argparser.add_argument("--num-layers", type=int, default=2)
+argparser.add_argument("--dataset", type=str, default="ogbn-products")
 argparser.add_argument("--data-path", type=str, default="/home/ningxin/data/")
 # train arguments
 argparser.add_argument("--train", action="store_true")
@@ -26,9 +27,9 @@ args = argparser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 root = args.data_path
-dataset = PygNodePropPredDataset("ogbn-products", root)
+dataset = PygNodePropPredDataset(args.dataset, root)
 split_idx = dataset.get_idx_split()
-evaluator = Evaluator(name="ogbn-products")
+evaluator = Evaluator(name=args.dataset)
 data = dataset[0].to(device, "x", "y")
 
 train_loader = NeighborLoader(
@@ -121,7 +122,7 @@ def train(epoch):
     for batch in train_loader:
         optimizer.zero_grad()
         out = model(batch.x, batch.edge_index.to(device))[: batch.batch_size]
-        y = batch.y[: batch.batch_size].squeeze()
+        y = batch.y[: batch.batch_size].squeeze().to(torch.int64)
         loss = F.cross_entropy(out, y)
         loss.backward()
         optimizer.step()
@@ -177,7 +178,7 @@ for epoch in range(1, args.epoch):
     print(f"Epoch {epoch:02d}, Loss: {loss:.4f}, Approx. Train: {acc:.4f}")
 
 model_path = os.path.join(
-    os.path.dirname(__file__), "sage{}.pt".format(args.num_layers)
+    os.path.dirname(__file__), "{}-sage{}.pt".format(args.dataset, args.num_layers)
 )
 torch.save(model.state_dict(), model_path)
 train_acc, val_acc, test_acc = test()
