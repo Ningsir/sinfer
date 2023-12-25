@@ -54,9 +54,12 @@ def extract_time_average(file_path, num_layers, num_nodes):
             ans += sum(times[i]) / len(times[i])
         return round(ans, 2)
 
-    average_time = 0
+    average_time = -1
     for i in range(num_nodes):
-        average_time = max(average_time, sum(end2end_times[i]) / len(end2end_times[i]))
+        if len(end2end_times[i]) != 0:
+            average_time = max(
+                average_time, sum(end2end_times[i]) / len(end2end_times[i])
+            )
     return (
         round(average_time, 2),
         average_sum(sample_times),
@@ -110,23 +113,27 @@ def output(log_files, num_layers, num_nodes, out_path):
 
 
 if __name__ == "__main__":
-    base_dir = "/home/ningxin/ssdgnn/ssdgnn/sinfer/example"
+    base_dir = os.path.dirname(__file__)
     examples = ["dgl", "pyg", "mmap", "sinfer"]
     for example in examples:
         sage2_files = []
         sage3_files = []
         for file_name in os.listdir(os.path.join(base_dir, example, "log")):
             ss = file_name.split("-")
-            if ss[0].strip() == "ogbn":
-                for s in ss:
-                    if s == "sage2":
-                        sage2_files.append(
-                            os.path.join(base_dir, example, "log", file_name)
-                        )
-                    elif s == "sage3":
-                        sage3_files.append(
-                            os.path.join(base_dir, example, "log", file_name)
-                        )
+            ext_name = os.path.splitext(file_name)[-1]
+            if ext_name == ".log":
+                if ss[0].strip() == "ogbn":
+                    for s in ss:
+                        if s == "sage2":
+                            sage2_files.append(
+                                os.path.join(base_dir, example, "log", file_name)
+                            )
+                        elif s == "sage3":
+                            sage3_files.append(
+                                os.path.join(base_dir, example, "log", file_name)
+                            )
+        sage2_files = sorted(sage2_files)
+        sage3_files = sorted(sage3_files)
         out_path1 = os.path.join(base_dir, example, "log", "sage2-result.csv")
         output(sage2_files, 2, 2, out_path1)
         out_path2 = os.path.join(base_dir, example, "log", "sage3-result.csv")
