@@ -98,7 +98,7 @@ if __name__ == "__main__":
         start = time.time()
         with th.no_grad():
             out = model.inference(feat_store, dataloader, device)
-        print("infer time: {:.4f} s".format(time.time() - start))
+        print("infer time: {:.4f}".format(time.time() - start))
         out = out.gather_all()
         all_embs.append(out)
         labels = data.labels
