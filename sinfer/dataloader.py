@@ -35,15 +35,16 @@ class SinferPygDataloader(th.utils.data.DataLoader):
     """
     Sampler for the baseline. We modified NeighborSampler class of PyG.
 
-    Args:
+    Parameters
+    ----------
         indptr (Tensor): the indptr tensor.
         indices (Tensor): the (memory-mapped) indices tensor.
         fan_outs ([int]): The number of neighbors to sample for each node in each layer.
-            If set to fan_outs[l] = -1`, all neighbors are included in layer `l`.
+            If set to `fan_outs[l] = -1`, all neighbors are included in layer `l`.
         node_idx (Tensor): The nodes that should be considered for creating mini-batches.
         **kwargs (optional): Additional arguments of
             `torch.utils.data.DataLoader`, such as `batch_size`,
-            `shuffle`, `drop_last`m `num_workers`.
+            `shuffle`, `drop_last`, `num_workers`.
     """
 
     def __init__(
@@ -69,6 +70,20 @@ class SinferPygDataloader(th.utils.data.DataLoader):
         )
 
     def sample(self, batch):
+        """
+        采样
+
+        Parameters
+        ----------
+            batch: 被采样的种子节点
+
+        Ouptut
+        ----------
+        (batch_size, batch, n_id, adjs):
+            batch: 种子点
+            n_id: 采样子图包含的所有节点
+            adjs: 采样得到的子图
+        """
         if not isinstance(batch, th.Tensor):
             batch = th.tensor(batch)
 

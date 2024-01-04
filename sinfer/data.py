@@ -6,6 +6,7 @@ import numpy as np
 
 class SinferDataset:
     def __init__(self, path):
+        self.path = path
         self.coo_path = os.path.join(path, "coo.bin")
         self.features_path = os.path.join(path, "feat.bin")
         self.offsets_path = os.path.join(path, "offsets.txt")
@@ -36,6 +37,13 @@ class SinferDataset:
     @property
     def num_nodes(self):
         return self._num_nodes
+
+    @property
+    def origin_total_num_nodes(self):
+        if "origin_total_num_nodes" in self.conf.keys():
+            return self.conf["origin_total_num_nodes"]
+        else:
+            return -1
 
     @property
     def feat_dim(self):
@@ -87,6 +95,40 @@ class SinferDataset:
         test_idx_ = np.fromfile(self.test_idx_path, dtype=self.conf["test_idx_dtype"])
         test_idx_ = th.from_numpy(test_idx_)
         return test_idx_
+
+    @property
+    def local_degree(self):
+        local_degree_path = os.path.join(self.path, "local_degree.bin")
+        local_degree_ = np.fromfile(
+            local_degree_path, dtype=self.conf["local_degree_dtype"]
+        )
+        local_degree_ = th.from_numpy(local_degree_)
+        return local_degree_
+
+    @property
+    def origin_nodes(self):
+        origin_nodes_path = os.path.join(self.path, "origin_nodes.bin")
+        origin_nodes_ = np.fromfile(
+            origin_nodes_path, dtype=self.conf["origin_nodes_dtype"]
+        )
+        origin_nodes_ = th.from_numpy(origin_nodes_)
+        return origin_nodes_
+
+    @property
+    def global_degree(self):
+        global_degree_path = os.path.join(self.path, "global_degree.bin")
+        global_degree_ = np.fromfile(
+            global_degree_path, dtype=self.conf["global_degree_dtype"]
+        )
+        global_degree_ = th.from_numpy(global_degree_)
+        return global_degree_
+
+    @property
+    def feat(self):
+        feat_path = os.path.join(self.path, "feat.bin")
+        feat_ = np.fromfile(feat_path, dtype=self.conf["feat_dtype"])
+        feat_ = th.from_numpy(feat_).view(-1, self.feat_dim)
+        return feat_
 
     def __str__(self) -> str:
         return "num_nodes: {}, feat_dim: {}, num_classes: {}".format(
