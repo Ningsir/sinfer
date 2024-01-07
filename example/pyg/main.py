@@ -31,7 +31,11 @@ argparser.add_argument("--fan-outs", type=str, default="15,10")
 argparser.add_argument("--epoch", type=int, default=20)
 args = argparser.parse_args()
 print(args)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if args.gpu >= 0:
+    device = torch.device("cuda:%d" % args.gpu)
+else:
+    device = torch.device("cpu")
+print(f"device: {device}")
 dataset = PygNodePropPredDataset(args.dataset, args.data_path)
 split_idx = dataset.get_idx_split()
 evaluator = Evaluator(name=args.dataset)
@@ -49,6 +53,7 @@ train_loader = NeighborLoader(
     num_workers=args.num_workers,
     persistent_workers=True,
 )
+# 注意: 特征在GPU上, 但执行的CPU采样(PyG只支持CPU采样)
 subgraph_loader = NeighborLoader(
     data,
     input_nodes=None,

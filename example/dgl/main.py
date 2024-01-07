@@ -66,31 +66,31 @@ class SAGE(nn.Module):
             mem = 0
             t1 = time.time()
             start = time.time()
-            with dataloader.enable_cpu_affinity():
-                for _, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
-                    mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
-                    sample_time += time.time() - t1
-                    t2 = time.time()
-                    x = feat[input_nodes]
-                    gather_time += time.time() - t2
+            # with dataloader.enable_cpu_affinity():
+            for _, (input_nodes, output_nodes, blocks) in enumerate(dataloader):
+                mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
+                sample_time += time.time() - t1
+                t2 = time.time()
+                x = feat[input_nodes]
+                gather_time += time.time() - t2
 
-                    t3 = time.time()
-                    x = x.to(device)
-                    blocks = [block.to(device) for block in blocks]
-                    torch.cuda.synchronize()
-                    copy_time += time.time() - t3
+                t3 = time.time()
+                x = x.to(device)
+                blocks = [block.to(device) for block in blocks]
+                torch.cuda.synchronize()
+                copy_time += time.time() - t3
 
-                    t4 = time.time()
-                    h = layer(blocks[0], x)  # len(blocks) = 1
-                    if l != len(self.layers) - 1:
-                        h = F.relu(h)
-                        h = self.dropout(h)
-                    # by design, our output nodes are contiguous
-                    y[output_nodes[0] : output_nodes[-1] + 1] = h.to(buffer_device)
-                    torch.cuda.synchronize()
-                    infer_time += time.time() - t4
-                    t1 = time.time()
-                    mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
+                t4 = time.time()
+                h = layer(blocks[0], x)  # len(blocks) = 1
+                if l != len(self.layers) - 1:
+                    h = F.relu(h)
+                    h = self.dropout(h)
+                # by design, our output nodes are contiguous
+                y[output_nodes[0] : output_nodes[-1] + 1] = h.to(buffer_device)
+                torch.cuda.synchronize()
+                infer_time += time.time() - t4
+                t1 = time.time()
+                mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             print(
                 "layer: {}, peak rss mem: {:.4f} GB, time: {:.4f}, sample time: {:.4f}, gather time: {:.4f}, transfer time: {:.4f}, infer time: {:.4f}".format(
                     l,
