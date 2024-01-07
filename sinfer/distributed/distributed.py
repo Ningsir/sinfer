@@ -280,6 +280,11 @@ class GASStore:
             )
         # TODO: 3. num_mirror_nodes对应nodes减1，如果等于0，则表示可以执行apply
 
+    def scatter_all(self, emb: torch.Tensor):
+        nodes = torch.arange(emb.shape[0], dtype=torch.int64)
+        self.scatter(nodes, emb)
+        self.sync()
+
     def apply_all(self, emb, nonlinear_func=None):
         """
         应用非线性激活函数, 对于内顶点: 直接更新输入`emb`; 对于边界点, 更新`master_store`

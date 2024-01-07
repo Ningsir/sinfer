@@ -69,6 +69,7 @@ def main(rank, world_size, args):
         device = th.device("cuda:%d" % args.gpu)
     else:
         device = th.device("cpu")
+    print(f"rank: {rank}, device: {device}")
     data_path = os.path.join(args.data_path, args.dataset, f"part-{rank}")
     data = SinferDataset(data_path)
     print(data)
@@ -84,6 +85,7 @@ def main(rank, world_size, args):
     dataloader = SinferPygDataloader(
         data.indptr, data.indices, [-1], local_nodes, **kwargs
     )
+    print(f"num edges: {data.indices.shape[0]}")
     part_info = dist.PartInfo(local_nodes, origin_nodes, local_degree, global_degree)
     model = SAGE(data.feat_dim, args.num_hidden, data.num_classes, args.num_layers).to(
         device
@@ -91,14 +93,20 @@ def main(rank, world_size, args):
     model_path = os.path.join(
         os.path.dirname(__file__), f"{args.dataset}-sage{args.num_layers}.pt"
     )
-    model.load_state_dict(th.load(model_path))
+    model.load_state_dict(th.load(model_path, map_location=device))
     all_embs = []
     for i in range(args.runs):
         dist.init_master_store(rank, world_size, part_info)
         model.eval()
         start = time.time()
         with th.no_grad():
-            out = model.inference(data.feat, dataloader, device, origin_total_num_nodes)
+            out = model.inference(
+                data.feat,
+                dataloader,
+                device,
+                origin_total_num_nodes,
+                pipeline=args.pipeline,
+            )
         print("infer time: {:.4f}".format(time.time() - start))
         all_embs.append(out)
         labels = data.labels
@@ -144,6 +152,7 @@ if __name__ == "__main__":
         type=str,
         default="/mnt/ningxin/data/dist",
     )
+    argparser.add_argument("--pipeline", action="store_true")
     args = argparser.parse_args()
     print(args)
 

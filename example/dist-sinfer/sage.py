@@ -42,7 +42,9 @@ class SAGE(torch.nn.Module):
         return x.log_softmax(dim=-1)
 
     @torch.no_grad()
-    def inference(self, x_all: torch.Tensor, loader, device, num_total_nodes):
+    def inference(
+        self, x_all: torch.Tensor, loader, device, num_total_nodes, pipeline=True
+    ):
         import psutil
 
         process = psutil.Process()
@@ -72,21 +74,24 @@ class SAGE(torch.nn.Module):
 
                 t2 = time.time()
                 x = x_all[n_id]
+                edge_index, _, _ = adjs[0]
                 gather_time += time.time() - t2
 
                 t3 = time.time()
                 # 3. transfer
-                x_cuda = x.to(device)
-                x_target = x_cuda[:batch_size]
-                edge_index, _, _ = adjs[0].to(device)
-                torch.cuda.synchronize()
+                if x.device != device:
+                    x = x.to(device)
+                    edge_index = edge_index.to(device)
+                    torch.cuda.synchronize()
                 transfer_time += time.time() - t3
 
                 # 4. 执行推理
                 t4 = time.time()
-                x_cuda = self.convs[i]((x_cuda, x_target), edge_index)
-                x_cpu = x_cuda.to(torch.device("cpu"))
-                gas_store.scatter(seeds, x_cpu)
+                x_target = x[:batch_size]
+                x = self.convs[i]((x, x_target), edge_index)
+                x_cpu = x.cpu()
+                if pipeline:
+                    gas_store.scatter(seeds, x_cpu)
                 torch.cuda.synchronize()
                 infer_time += time.time() - t4
 
@@ -95,6 +100,8 @@ class SAGE(torch.nn.Module):
                 mem = max(mem, process.memory_info().rss / (1024 * 1024 * 1024))
             x_all = torch.cat(x_output, dim=0)
             t5 = time.time()
+            if not pipeline:
+                gas_store.scatter_all(x_all)
             gas_store.sync()
             if i != self.num_layers - 1:
                 nonlinear_func = F.relu

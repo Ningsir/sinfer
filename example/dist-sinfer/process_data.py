@@ -196,6 +196,11 @@ def main(rank, world_size, dataset, part_path, num_parts, out_path):
         map_test_idx,
         num_nodes,
     ) = mapping(coo_row, coo_col, nodes, feat, labels, train_idx, val_idx, test_idx)
+    # 添加反向边
+    map_coo_row_ = np.concatenate((map_coo_row, map_coo_col))
+    map_coo_col_ = np.concatenate((map_coo_col, map_coo_row))
+    map_coo_row = map_coo_row_
+    map_coo_col = map_coo_col_
     # 划分训练集、测试集、验证集
     split_train_idx = idx_split(th.from_numpy(map_train_idx)).numpy()
     split_test_idx = idx_split(th.from_numpy(map_test_idx)).numpy()
