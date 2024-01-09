@@ -1,6 +1,14 @@
-# sinfer: 基于SSD的GNN逐层全图推理系统
+# sinfer
 
-## 方案
+sinfer 是一个基于大规模图数据的GNN全图推理系统，在单机环境下，支持基于SSD的GNN逐层全图，同时还支持基于分布式的GNN全图推理。
+
+TODO：
+- [ ] 增加实验，完善文档
+- [ ] 实现基于UVA的采样和特征提取
+- [ ] 分布式：实现异步的分布式全图推理；消息压缩以减小通信量
+- [ ] 实现GPU和NVM的直接访问
+
+## 基于SSD的GNN全图推理
 处理流程：
 
 1. 预处理阶段：使用metis对图进行切分，然后执行顶点ID重映射，将同一个分区内的顶点ID映射为连续的ID；
@@ -36,11 +44,46 @@ def inference(self, x_all):
         x_all = emb_store
     return x_all
 ```
-TODO：
-- [ ] 增加实验，完善文档
-- [ ] 实现基于UVA的采样和特征提取
-- [ ] 分布式：实现异步的分布式全图推理；消息压缩以减小通信量
-- [ ] 实现GPU和NVM的直接访问
+
+## 分布式GNN全图推理
+
+首先采用`veterx-cut`的方法对图进行分区，如果一个顶点在多个分区中，则称之为边界点。边界点又分为master节点和mirror节点，所有边界点的最新embedding都会被同步到master节点。
+
+数据处理完成后采用`GAS`的模型执行逐层的全图推理，`GAS`模型主要提供以下编程API：
+1. scatter：将mirror节点的embedding同步到master节点；
+2. apply：对master节点的embedding应用非线性激活函数的更新，以得到最新的embedding；
+3. gather：mirror节点从master节点收集最新的embedding。
+
+
+基于`GAS`模型的分布式全图推理代码如下所示：
+```python
+# 初始化GAS以及分布式环境
+sinfer.distributed.init_gas_store(rank, world_size, part_info)
+
+# 逐层推理
+for layer in range(self.num_layers):
+    # 1. 创建GASStore：用于存储边界点的embedding
+    gas_store = sinfer.distributed.GASStore((num_total_nodes // world_size + 1, num_hiddens[layer]), dtype=torch.float32, name=f"gas_store_layer_{layer}")
+    x_output = []
+    # 2. 执行推理
+    for batch_size, seeds, n_id, adj in dataloader:
+        x = x_all.[n_id].to(device)
+        x_target = x[: size[1]]
+        # 2.1 推理
+        x = convs[layer]((x, x_target), adj)
+        x_output.append(x)
+        # 2.2 scatter：将mirror节点的embedding同步到master节点
+        gas_store.scatter(seeds, x)
+    # 3. 同步: 等待所有scatter执行完成
+    gas_store.sync()
+    x_all = torch.cat(x_output, dim=0)
+    # 4. apply：应用非线性激活更新
+    gas_store.apply(x_all, nonlinear_func)
+    # 5. gather
+    gas_store.gather(x_all)
+
+sinfer.distributed.shutdown()
+```
 
 ## 使用教程
 
@@ -97,6 +140,7 @@ python example/sinfer/main.py --data-path /home/data/ogbn-products-ssd-infer-par
 ![image-20231225122219891](https://raw.githubusercontent.com/Ningsir/image/main/image/image-20231225122219891.png)
 
 不限制内存：全图推理运行时间
+> 注意：PyG在采样时就将特征传输到GPU上，所以PyG的transfer时间相对于其他系统更少.
 
 ![image-20231225105011711](https://raw.githubusercontent.com/Ningsir/image/main/image/image-20231225105011711.png)
 
@@ -115,6 +159,17 @@ python example/sinfer/main.py --data-path /home/data/ogbn-products-ssd-infer-par
 
 
 ### 分布式测试
+
+#### dist-sinfer vs DistDGL
+
+系统：
+* DistDGL：分布式DGL
+* dist-sinfer：分布式sinfer
+* dist-sinfer(pipeline): 分布式sinfer，计算和scatter通信重叠。
+
+结果：dist-sinfer相对于DistDGL有1.85-3.67X的加速；dist-sinfer(pipeline)相对于DistDGL有1.86-6.3X的加速。
+
+![image-20240109112530506](https://raw.githubusercontent.com/Ningsir/image/main/image/image-20240109112530506.png)
 
 #### 采样后外顶点和内顶点数据占比
 
